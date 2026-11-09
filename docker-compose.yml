@@ -1,0 +1,66 @@
+services:
+  mongodb:
+    image: mongo:8.0
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:?Set MONGO_INITDB_ROOT_USERNAME in .env}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:?Set MONGO_INITDB_ROOT_PASSWORD in .env}
+      MONGO_DATABASE: ${MONGO_DATABASE:-gate_inventory}
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME:?Set MONGO_APP_USERNAME in .env}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Set MONGO_APP_PASSWORD in .env}
+    entrypoint: ["/bin/sh", "/opt/mongo/docker-entrypoint-with-keyfile.sh"]
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--keyFile", "/tmp/mongo-keyfile"]
+    volumes:
+      - mongodb_data:/data/db
+      - ./docker/mongo-entrypoint-with-keyfile.sh:/opt/mongo/docker-entrypoint-with-keyfile.sh:ro
+      - ./docker/mongo-init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - inventory-internal
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet
+          --username "$$MONGO_INITDB_ROOT_USERNAME"
+          --password "$$MONGO_INITDB_ROOT_PASSWORD"
+          --authenticationDatabase admin
+          --eval 'try { rs.status(); } catch (error) { if (error.code === 94 || error.codeName === "NotYetInitialized") { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "mongodb:27017" }] }); } else { throw error; } } quit(db.hello().isWritablePrimary ? 0 : 1);'
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 3000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MONGODB_URI: ${MONGODB_URI:?Set MONGODB_URI in .env}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    ports:
+      - "${API_HOST_BIND:-127.0.0.1}:${API_HOST_PORT:-3000}:3000"
+    networks:
+      - inventory-internal
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+networks:
+  inventory-internal:
+    internal: true
+
+volumes:
+  mongodb_data:
