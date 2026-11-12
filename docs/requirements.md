@@ -91,8 +91,8 @@ Every transaction must be attributable to the authenticated user and use a serve
 - The exact adjustment workflow and representation.
 - Whether a quantity exactly equal to the minimum is considered low stock.
 - Supported flexible attribute types, validation rules, and whether attributes are searchable/filterable.
-- Password policy, password-hashing algorithm, session implementation and storage, session lifetime, and account recovery/reset process.
-- CSRF strategy appropriate to the selected authentication/session approach for authenticated writes.
+- Account recovery/reset process.
+- TLS termination, reverse-proxy identity/trust configuration, and LAN certificate operations.
 - Audit-log event coverage, retention, and any export requirements.
 - Expected user count, availability expectations, and transaction conflict retry behavior.
 - Photo file formats, size limits, storage location, and backup strategy.

@@ -9,6 +9,7 @@ export interface UserRecord {
   passwordHash: string;
   role: UserRole;
   isActive: boolean;
+  passwordChangeRequired: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -19,6 +20,11 @@ const userSchema = new Schema<UserRecord>(
     passwordHash: { type: String, required: true, select: false },
     role: { type: String, enum: USER_ROLES, required: true },
     isActive: { type: Boolean, required: true, default: true },
+    passwordChangeRequired: {
+      type: Boolean,
+      required: true,
+      default: false,
+    },
   },
   { timestamps: true, strict: "throw" },
 );

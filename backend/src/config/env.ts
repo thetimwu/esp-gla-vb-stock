@@ -26,6 +26,11 @@ const environmentSchema = z.object({
     .default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   MONGODB_URI: mongoUriSchema,
+  SESSION_SECRET: z.string().min(32),
+  HTTPS_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),

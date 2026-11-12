@@ -9,7 +9,15 @@ services:
       MONGO_APP_USERNAME: ${MONGO_APP_USERNAME:?Set MONGO_APP_USERNAME in .env}
       MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?Set MONGO_APP_PASSWORD in .env}
     entrypoint: ["/bin/sh", "/opt/mongo/docker-entrypoint-with-keyfile.sh"]
-    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--keyFile", "/tmp/mongo-keyfile"]
+    command:
+      [
+        "mongod",
+        "--replSet",
+        "rs0",
+        "--bind_ip_all",
+        "--keyFile",
+        "/tmp/mongo-keyfile",
+      ]
     volumes:
       - mongodb_data:/data/db
       - ./docker/mongo-entrypoint-with-keyfile.sh:/opt/mongo/docker-entrypoint-with-keyfile.sh:ro
@@ -39,6 +47,8 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       PORT: 3000
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      HTTPS_ENABLED: ${HTTPS_ENABLED:-false}
       MONGODB_URI: ${MONGODB_URI:?Set MONGODB_URI in .env}
     depends_on:
       mongodb:

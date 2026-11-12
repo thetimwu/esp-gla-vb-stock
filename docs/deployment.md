@@ -15,13 +15,19 @@ Develop on Ubuntu/Linux with VS Code and GitHub Copilot Agent. The eventual deve
 From the project root:
 
 1. Copy `.env.example` to `.env`; replace all placeholder values with unique local database credentials. Ensure the URI username/password match the Mongo app-user variables and URL-encode reserved characters in the URI.
-2. Run `docker compose up --build`.
-3. Check `http://localhost:3000/api/health` and `http://localhost:3000/api/components`.
-4. Stop with `docker compose down`. This preserves the named MongoDB data volume; do not use `down -v` for normal shutdown.
+2. Generate a stable session secret with `openssl rand -hex 32` and set `SESSION_SECRET` in `.env`. Keep it private and unchanged across backend restarts.
+3. Run `docker compose up --build`.
+4. Create the first Admin with `docker compose exec -it backend npm run create-admin`. Enter the username and password interactively; the password prompt is hidden. This command refuses to create a duplicate initial Admin; the bootstrap Admin must change that password after logging in.
+5. Check `http://localhost:3000/api/health` and `http://localhost:3000/api/components`.
+6. Stop with `docker compose down`. This preserves the named MongoDB data volume; do not use `down -v` for normal shutdown.
 
 Compose starts MongoDB with authentication and a single-node replica set named `rs0`. On the first fresh data volume, MongoDB's official initialization flow creates the root account and runs the checked-in initialization script to create a database-scoped `readWrite` account. The Mongo health check idempotently initiates the replica set and waits for it to become primary; the backend waits for this healthy status before starting. The API uses the application account, and the MongoDB port is not published to the host.
 
 The Mongo initialization script only runs against an empty data directory. Changing user/password variables in `.env` does not rotate existing credentials. Use the approved MongoDB credential-rotation procedure when changing them. The generated replica-set keyfile is ephemeral and appropriate only for this single-node container setup; configure a managed, persistent keyfile before expanding to multiple replica-set members.
+
+Express sessions are stored in MongoDB's `sessions` collection and expire after eight hours. Do not change `SESSION_SECRET` during normal restarts, because doing so invalidates existing cookies. `HTTPS_ENABLED=false` is appropriate for local HTTP. Set it to `true` only when HTTPS terminates at a trusted reverse proxy; the application then marks cookies Secure and trusts the proxy's forwarded protocol.
+
+The API issues session-backed CSRF tokens at `GET /api/auth/csrf-token`. Clients must send the returned value in the `x-csrf-token` header on login, logout, password changes, and all other state-changing requests. Login rotates both the session ID and CSRF token.
 
 ### Backend development and checks
 

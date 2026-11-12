@@ -1,8 +1,11 @@
 import type { Logger } from "pino";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
+import session from "express-session";
 import { createApp } from "../app.js";
 import { createLogger } from "../config/logger.js";
+import type { AuthService } from "../services/authService.js";
+import type { UserManagementService } from "../services/userManagementService.js";
 import type {
   ComponentReader,
   PublicComponent,
@@ -30,10 +33,32 @@ function createTestApp(
     listPublic: vi.fn(async () => components),
     findPublicById: vi.fn(async () => overrides.detail ?? null),
   };
+  const authService: AuthService = {
+    authenticate: vi.fn(async () => null),
+    findActiveUser: vi.fn(async () => null),
+    changePassword: vi.fn(async () => false),
+  };
+  const userManagementService: UserManagementService = {
+    listUsers: vi.fn(async () => []),
+    createUser: vi.fn(async () => {
+      throw new Error("Not implemented in this test");
+    }),
+    updateUser: vi.fn(async () => {
+      throw new Error("Not implemented in this test");
+    }),
+    setUserActive: vi.fn(async () => {
+      throw new Error("Not implemented in this test");
+    }),
+  };
   const app = createApp({
     isDatabaseConnected: () => overrides.connected ?? true,
     logger,
+    sessionSecret: "test-session-secret-with-more-than-32-characters",
+    sessionStore: new session.MemoryStore(),
+    httpsEnabled: false,
     componentReader: reader,
+    authService,
+    userManagementService,
   });
   return { app, reader };
 }
@@ -128,7 +153,27 @@ describe("public component endpoints", () => {
     const app = createApp({
       isDatabaseConnected: () => true,
       logger,
+      sessionSecret: "test-session-secret-with-more-than-32-characters",
+      sessionStore: new session.MemoryStore(),
+      httpsEnabled: false,
       componentReader: reader,
+      authService: {
+        authenticate: vi.fn(async () => null),
+        findActiveUser: vi.fn(async () => null),
+        changePassword: vi.fn(async () => false),
+      },
+      userManagementService: {
+        listUsers: vi.fn(async () => []),
+        createUser: vi.fn(async () => {
+          throw new Error("Not implemented in this test");
+        }),
+        updateUser: vi.fn(async () => {
+          throw new Error("Not implemented in this test");
+        }),
+        setUserActive: vi.fn(async () => {
+          throw new Error("Not implemented in this test");
+        }),
+      },
     });
 
     const response = await request(app).get("/api/components");
@@ -149,6 +194,7 @@ describe("configuration validation", () => {
       parseEnvironment({
         PORT: "70000",
         MONGODB_URI: "mongodb-not-a-url",
+        SESSION_SECRET: "test-session-secret-with-more-than-32-characters",
       } as NodeJS.ProcessEnv),
     ).toThrow();
   });

@@ -63,7 +63,7 @@ Express middleware must enforce authentication and role-based authorization on t
 The first backend milestone defines collection schemas but does not seed data or expose write operations. These are minimal implementation choices for the documented logical models, not a final business schema:
 
 - **Components:** `displayName`, non-negative numeric `currentQuantity`, non-negative numeric `minimumStockLevel`, optional `photoUrl`, optional flexible `attributes`, and `isArchived`, plus Mongoose timestamps. Public reads project only `_id`, display name, quantity, minimum level, and photo URL; they do not return attributes or persistence-only fields.
-- **Users:** `username`, `passwordHash` (excluded from ordinary Mongoose selection), `role` (`Engineer` or `Admin`), and `isActive`, plus timestamps. No user is seeded. A username is used as the initial account identifier pending confirmation.
+- **Users:** normalized unique `username`, `passwordHash` (excluded from ordinary Mongoose selection), `role` (`Engineer` or `Admin`), `isActive`, and `passwordChangeRequired`, plus timestamps. No user is seeded; the first Admin is created by a one-time CLI.
 - **Stock transactions:** references to component and user, server-defaulted timestamp, previous/new quantities, signed change amount, action type, and optional comment. Stored separately in an append-oriented collection.
 - **Audit logs:** actor reference, action, target type (`user` or `component`), target ID, and timestamp in a separate collection. No audit API is exposed in this milestone.
 
@@ -121,6 +121,16 @@ Enforce authentication, active-account checks, and role checks in Express middle
 
 The component endpoints require no account or session and use an explicit response projection. Search/filter behavior is not implemented yet.
 
+### Milestone 2 authentication API
+
+- `GET /api/auth/csrf-token` creates or returns a synchronizer token in the server-side session so a future React client can submit it in `x-csrf-token`.
+- `POST /api/auth/login`, `POST /api/auth/logout`, and `POST /api/auth/password-change` require CSRF tokens. Login regenerates the session ID; logout destroys the server-side session.
+- `GET /api/auth/me` returns only the active user's public account fields.
+- `GET /api/users`, `POST /api/users`, `PATCH /api/users/:userId`, and the `POST /api/users/:userId/deactivate|reactivate` actions require an active Admin session and CSRF protection for writes.
+- Usernames are trimmed and normalized to lowercase. Passwords are Argon2id hashes, have a 12–128 character policy, and never appear in API responses. Every newly created account, including the bootstrap Admin, must change its initial password.
+- Session records are stored in MongoDB with an eight-hour lifetime. `SESSION_SECRET` must be a stable, private value. Secure cookies and proxy protocol trust are enabled only with `HTTPS_ENABLED=true` behind a trusted TLS-terminating proxy.
+- The first Admin is created by the one-time interactive `npm run create-admin` command inside the backend container. No default account is seeded.
+
 ## Security approach
 
 - Use server-side password hashing with a vetted algorithm and parameters selected during implementation.
@@ -135,6 +145,8 @@ The component endpoints require no account or session and use an explicit respon
 - Keep secrets in deployment/local environment configuration, not source control. The checked-in `.env.example` contains placeholders only.
 - Restrict network access to the internal LAN and configure host firewall rules accordingly.
 
+Milestone 2 resolves the authentication/session/CSRF choices above using Argon2id, Express sessions stored in MongoDB, `csrf-sync`, and a login rate limit. TLS termination and the trusted-proxy deployment remain environment-specific.
+
 ## Unresolved design decisions
 
-See [requirements.md](./requirements.md#decisions-still-to-make) for the full list. In particular, finalize quantity precision, adjustment semantics, authentication/session and CSRF mechanisms, API contracts, photo storage, flexible attribute validation, audit coverage, and LAN/TLS details before implementation.
+See [requirements.md](./requirements.md#decisions-still-to-make) for the full list. In particular, finalize quantity precision, adjustment semantics, API contracts, photo storage, flexible attribute validation, audit retention, and LAN/TLS details before implementation.
