@@ -47,6 +47,7 @@ services:
       - "${API_HOST_BIND:-127.0.0.1}:${API_HOST_PORT:-3000}:3000"
     networks:
       - inventory-internal
+      - inventory-api
     healthcheck:
       test:
         - CMD
@@ -61,6 +62,7 @@ services:
 networks:
   inventory-internal:
     internal: true
+  inventory-api:
 
 volumes:
   mongodb_data:
