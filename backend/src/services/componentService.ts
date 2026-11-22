@@ -1,5 +1,5 @@
-import type { Types } from "mongoose";
-import { ComponentModel, type ComponentRecord } from "../models/Component.js";
+import { AppDataSource } from "../config/dataSource.js";
+import { Component } from "../entities/Component.js";
 
 export interface PublicComponent {
   id: string;
@@ -14,44 +14,48 @@ export interface ComponentReader {
   findPublicById(id: string): Promise<PublicComponent | null>;
 }
 
-type PublicComponentDocument = Pick<
-  ComponentRecord,
-  "_id" | "displayName" | "currentQuantity" | "minimumStockLevel" | "photoUrl"
+type PublicComponentRecord = Pick<
+  Component,
+  "id" | "name" | "currentQuantity" | "minimumStockLevel" | "photoPath"
 >;
 
-function toPublicComponent(
-  component: PublicComponentDocument & { _id: Types.ObjectId },
-): PublicComponent {
+function toPublicComponent(component: PublicComponentRecord): PublicComponent {
   return {
-    id: component._id.toString(),
-    displayName: component.displayName,
+    id: component.id,
+    displayName: component.name,
     currentQuantity: component.currentQuantity,
     minimumStockLevel: component.minimumStockLevel,
-    photoUrl: component.photoUrl ?? null,
+    photoUrl: component.photoPath,
   };
 }
 
-const publicProjection =
-  "_id displayName currentQuantity minimumStockLevel photoUrl";
-
 export const componentReader: ComponentReader = {
   async listPublic() {
-    const components = await ComponentModel.find({ isArchived: false })
-      .select(publicProjection)
-      .sort({ displayName: 1 })
-      .lean()
-      .exec();
-    return components.map((component) => toPublicComponent(component));
+    const components = await AppDataSource.getRepository(Component).find({
+      select: {
+        id: true,
+        name: true,
+        currentQuantity: true,
+        minimumStockLevel: true,
+        photoPath: true,
+      },
+      where: { isActive: true },
+      order: { name: "ASC" },
+    });
+    return components.map(toPublicComponent);
   },
 
   async findPublicById(id) {
-    const component = await ComponentModel.findOne({
-      _id: id,
-      isArchived: false,
-    })
-      .select(publicProjection)
-      .lean()
-      .exec();
+    const component = await AppDataSource.getRepository(Component).findOne({
+      select: {
+        id: true,
+        name: true,
+        currentQuantity: true,
+        minimumStockLevel: true,
+        photoPath: true,
+      },
+      where: { id, isActive: true },
+    });
     return component ? toPublicComponent(component) : null;
   },
 };

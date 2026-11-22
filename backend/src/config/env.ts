@@ -1,36 +1,20 @@
+import { resolve } from "node:path";
+import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
 
-const mongoUriSchema = z.string().superRefine((uri, context) => {
-  try {
-    const parsedUri = new URL(uri);
-    if (
-      !["mongodb:", "mongodb+srv:"].includes(parsedUri.protocol) ||
-      !parsedUri.hostname
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "MONGODB_URI must be a valid MongoDB connection URL",
-      });
-    }
-  } catch {
-    context.addIssue({
-      code: "custom",
-      message: "MONGODB_URI must be a valid MongoDB connection URL",
-    });
-  }
-});
+loadDotenv({ path: resolve(process.cwd(), "../.env") });
+loadDotenv();
 
 const environmentSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-  MONGODB_URI: mongoUriSchema,
-  SESSION_SECRET: z.string().min(32),
-  HTTPS_ENABLED: z
-    .enum(["true", "false"])
-    .default("false")
-    .transform((value) => value === "true"),
+  DB_HOST: z.string().min(1).default("127.0.0.1"),
+  DB_PORT: z.coerce.number().int().min(1).max(65535).default(5432),
+  DB_NAME: z.string().min(1),
+  DB_USER: z.string().min(1),
+  DB_PASSWORD: z.string().min(1),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),

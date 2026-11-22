@@ -2,151 +2,109 @@
 
 ## Agreed technology
 
-- **Frontend:** React, TypeScript, and Vite.
+- **Frontend:** React, TypeScript, and Vite (planned).
 - **Backend:** Node.js, Express.js, and TypeScript.
-- **Database:** MongoDB with Mongoose.
+- **Database:** PostgreSQL 17 with TypeORM and explicit migrations.
 - **Deployment:** Docker and Docker Compose.
 - **Initial host:** Windows PC on the internal company LAN, using Docker Desktop.
 - **Future target:** Ubuntu Server.
 
-This document defines the intended boundaries and data responsibilities, not a finalized API contract or implementation.
+The database schema is a foundation only. This migration milestone does not implement authentication, user-management APIs, stock modifications, audit APIs, or the frontend.
 
 ## System boundaries
 
 ```text
 Browser on company LAN
         |
-        | HTTP(S), public read API and authenticated operations
+        | public read API; future authenticated requests
         v
-React + TypeScript frontend
+React + TypeScript frontend (planned)
         |
-        | public component GETs; authenticated requests for protected data/writes
         v
 Express + TypeScript backend
         |
-        | Mongoose; replica-set transactions
+        | TypeORM; PostgreSQL transactions
         v
-MongoDB replica set (single node initially)
+PostgreSQL 17 (private Docker network)
 ```
 
-Browsers must never connect to MongoDB directly. Anyone on the authorised internal company LAN may use public, read-only component endpoints without an account or session. Authentication is required for every write and for protected reads such as transaction history; Admin authorization is required for administrative operations. The backend is the sole authority for authentication, authorization, validation, inventory mutations, audit writes, and database access. Docker networking should keep MongoDB on an internal container network and should not publish its port to the LAN.
-
-## Frontend responsibilities
-
-- Render the public component dashboard, search/filter controls, low-stock indicators, photos, and non-sensitive details without requiring login.
-- Render transaction forms/history and administrative screens only for the corresponding authenticated roles; these client-side gates are a usability aid, not authorization.
-- Send public component GET requests without requiring a session; send authenticated requests for transaction history and writes, and present validation/conflict errors clearly.
-- Avoid keeping authentication secrets in browser-accessible persistent storage. The final session mechanism, storage, and cookie settings are open decisions.
-- Meet accessibility requirements: semantic structure, keyboard operation, visible focus, labels and useful validation/error announcements, and adequate contrast.
+Browsers never connect to PostgreSQL directly. Public component endpoints remain unauthenticated, read-only, and session-free. Authentication is required for every future write and protected read; Admin authorization is required for future administrative operations. The backend is the sole authority for validation, authorization, business rules, and persistence. PostgreSQL is on the internal Docker network and is not exposed to the LAN. The Compose development port binding is localhost-only.
 
 ## Backend responsibilities
 
-Organize the backend so that HTTP routing, request validation, business rules, authorization, persistence, and response/error mapping are distinct responsibilities. Routes/controllers should not bypass business rules by writing directly to Mongoose models.
+Keep HTTP routing, request validation, business rules, authorization, persistence, and response/error mapping distinct. Routes/controllers must not bypass business rules by writing directly to repositories.
 
-Express middleware must enforce authentication and role-based authorization on the backend; application services must also preserve domain invariants. React visibility checks do not substitute for backend enforcement:
+- Keep `GET /api/health`, `GET /api/components`, and `GET /api/components/:id` public and read-only.
+- Public component responses include only the component UUID, name as `displayName`, current quantity, minimum stock level, and photo reference. They do not expose JSONB attributes, credentials, sessions, users, transactions, or audit data.
+- Validate UUID route parameters before querying PostgreSQL and return safe errors without exposing database internals.
+- In future milestones require authentication and an active account for every write and protected read. Require Admin for user administration, component administration, archiving, and audit-log access.
+- Use explicit TypeORM migrations. `synchronize` and automatic migration-on-startup remain disabled.
+- Keep secrets in environment configuration, not source control or logs.
 
-- Allow unauthenticated, read-only component GET endpoints for public fields only, including dashboard data, photos, current quantity, low-stock status, search/filter, and non-sensitive details.
-- Require authentication and an active account for all write endpoints and protected reads, including transaction history.
-- Require the Admin role for user administration, component definition/photo/minimum-stock/attribute management, archiving, and audit-log reads. Reject non-Admin requests.
-- Never include passwords, session data, sensitive user information, stock transaction history, or administrative audit logs in public GET responses.
-- Validate and normalize all request data on the server.
-- Apply stock rules and perform each stock change plus transaction insert in a MongoDB transaction.
-- Use concurrency-safe conditional updates (for example, matching the expected current quantity/version) so stale writes cannot silently succeed. A transaction conflict must be surfaced or retried safely.
-- Generate authoritative timestamps on the server.
-- Append administrative audit entries for administrative changes; audit coverage must be finalized.
-- Return safe, consistent errors without exposing stack traces, secrets, or database internals.
-- Apply login rate limiting and the selected CSRF protections.
-- Keep transaction and audit history protected against unauthorized modification or deletion.
+## PostgreSQL entities and constraints
 
-## Initial Mongoose schema decisions
+The initial migration creates four tables. No users, components, stock transactions, audit logs, or initial quantities are seeded.
 
-The first backend milestone defines collection schemas but does not seed data or expose write operations. These are minimal implementation choices for the documented logical models, not a final business schema:
+### `users`
 
-- **Components:** `displayName`, non-negative numeric `currentQuantity`, non-negative numeric `minimumStockLevel`, optional `photoUrl`, optional flexible `attributes`, and `isArchived`, plus Mongoose timestamps. Public reads project only `_id`, display name, quantity, minimum level, and photo URL; they do not return attributes or persistence-only fields.
-- **Users:** normalized unique `username`, `passwordHash` (excluded from ordinary Mongoose selection), `role` (`Engineer` or `Admin`), `isActive`, and `passwordChangeRequired`, plus timestamps. No user is seeded; the first Admin is created by a one-time CLI.
-- **Stock transactions:** references to component and user, server-defaulted timestamp, previous/new quantities, signed change amount, action type, and optional comment. Stored separately in an append-oriented collection.
-- **Audit logs:** actor reference, action, target type (`user` or `component`), target ID, and timestamp in a separate collection. No audit API is exposed in this milestone.
+- UUID primary key.
+- Username with a case-insensitive unique index and non-empty check.
+- Password hash (excluded from ordinary entity selections).
+- Role enum: `ADMIN` or `ENGINEER`.
+- Active/inactive and require-password-change booleans.
+- Created and updated `timestamptz` columns.
 
-Amounts use JavaScript/MongoDB numeric values with a minimum constraint but no integer-only restriction, because quantity precision and units remain undecided. `photoUrl` is only a placeholder for a photo reference; photo hosting and validation are not implemented. Flexible attributes are not returned publicly until their allowed/public fields are defined. No initial components, users, or credentials are seeded.
+### `components`
 
-## Data model responsibilities
+- UUID primary key, required name, description, optional part number, and optional photo path.
+- Integer current quantity and minimum stock level, defaulting to zero and constrained to non-negative values.
+- Flexible JSONB attributes.
+- Active/archived state (`is_active`) and created/updated timestamps.
+- Index on active state and name.
 
-The following are logical collections and minimum responsibilities, not a final schema.
+The API keeps the existing public response shape (`displayName`, `photoUrl`); these map to the entity's `name` and `photoPath`. Attributes remain private until supported public fields and validation are defined. No component data is seeded.
 
-### Components
+### `stock_transactions`
 
-One document per component definition, including a stable identifier, display name, current quantity, minimum stock level, active/archived state, photo reference/metadata, flexible attributes, and timestamps. Do not embed unbounded transaction history here. Initial component records and values are not yet defined.
+- UUID primary key and required component/user foreign keys with delete restricted.
+- Action enum: `STOCK_IN`, `STOCK_OUT`, or `ADJUSTMENT`.
+- Previous quantity, new quantity, and quantity change are integers.
+- Database checks require non-negative previous/new values and `quantity_change = new_quantity - previous_quantity`.
+- Optional comment and server-generated creation timestamp.
+- Component/time and user/time indexes.
 
-### Users
+### `audit_logs`
 
-One document per user, including a stable identifier, account identity, password hash, role (`Engineer` or `Admin`), active/deactivated state, and relevant timestamps. Historical transaction references must remain meaningful after deactivation. Password reset and account recovery details are undecided.
+- UUID primary key, nullable user foreign key (`SET NULL` on user deletion), action, entity type, and UUID entity ID.
+- JSONB details and server-generated creation timestamp.
+- Entity/time and user/time indexes.
 
-### Stock transactions
+Ordinary application workflows must deactivate users and archive components rather than deleting records referenced by history. Stock and audit records are append-only for ordinary users. Session storage is deliberately not implemented in this milestone; when authentication is implemented, use a PostgreSQL-compatible server-side session store.
 
-Append-only records in their own collection. Each successful transaction records at least:
+## Future stock transaction and concurrency design
 
-- Component reference.
-- Authenticated user reference.
-- Server-generated timestamp.
-- Previous and new quantity.
-- Change amount.
-- Action type (stock-in, stock-out, or adjustment).
-- Optional comment.
+No stock mutation endpoint is implemented now. Future stock operations must use a TypeORM transaction and:
 
-Do not expose ordinary-user APIs for editing or deleting these records. A stock operation must commit the component quantity change and transaction insert together in one MongoDB transaction. Transaction support requires a replica set, including the planned single-node initial deployment.
+1. Lock the target component row (`pessimistic_write`) or issue a conditional update that verifies the expected previous quantity.
+2. Reject a resulting quantity below zero or any stale/conflicting update.
+3. Update the component quantity and insert the corresponding transaction record in the same transaction.
+4. Commit both records together; roll both back if either operation fails.
 
-### Administrative audit logs
+This design prevents concurrent requests from silently overwriting one another and keeps each quantity change attributable and auditable.
 
-Separate collection for records of administrative actions. At minimum, the design must retain enough information to identify the actor, action, target, and time. Exact event coverage, before/after data, retention, and export policy are decisions to settle before implementation. Audit records must not be editable through ordinary application workflows.
+## API milestones and compatibility
 
-## API boundaries
+### Migration milestone
 
-The API is a private application interface between the browser and Express; the exact route names, versioning, payloads, and response schemas remain to be designed. It should provide distinct resource/action boundaries for:
+- `GET /api/health` executes a PostgreSQL connectivity check and reports only connected/unavailable state.
+- `GET /api/components` and trailing-slash equivalent return `{ "components": [] }` when no active components exist.
+- `GET /api/components/:id` returns a public component or a safe 404; malformed UUIDs are rejected with 400 before querying.
+- No auth, user-management, stock modification, or audit endpoints are exposed.
 
-- Authentication and session lifecycle.
-- Public, unauthenticated, read-only component listing/detail/search/filter endpoints, limited to non-sensitive fields and component photos.
-- Authenticated stock-in, stock-out, and quantity-adjustment commands.
-- Authenticated, read-only transaction history.
-- Admin-only user lifecycle and role management.
-- Admin-only component definition, photo, minimum-stock, attribute, and archive operations.
-- Admin-only audit-log viewing.
+### Authentication and inventory milestones
 
-Enforce authentication, active-account checks, and role checks in Express middleware for every protected operation. All write endpoints require authentication; Admin-only endpoints require an active Admin. Public component GETs must remain read-only and must not expose protected data. Do not rely on client-side role checks. Treat stock writes as commands rather than general-purpose component updates, so the stock invariant and transaction audit cannot be bypassed.
+The existing functional requirements for unauthenticated LAN dashboard access, Engineer/Admin roles, password handling, sessions, CSRF, rate limiting, protected transaction history, and Admin-only operations remain unchanged. Those features are deferred until after this database migration. Later authentication must use a PostgreSQL-compatible server-side session store and must preserve public browsing without creating a session. Authentication/API contracts, account recovery, audit coverage, and other open decisions remain governed by [requirements.md](./requirements.md).
 
-### Milestone 1 API
+## Open product decisions
 
-- `GET /api/health` reports API and current Mongoose connection state without connection details.
-- `GET /api/components` and its trailing-slash equivalent return a `components` array, empty when none exist.
-- `GET /api/components/:componentId` returns a public component or a safe 404; malformed ObjectId parameters are rejected with 400 before querying MongoDB.
-
-The component endpoints require no account or session and use an explicit response projection. Search/filter behavior is not implemented yet.
-
-### Milestone 2 authentication API
-
-- `GET /api/auth/csrf-token` creates or returns a synchronizer token in the server-side session so a future React client can submit it in `x-csrf-token`.
-- `POST /api/auth/login`, `POST /api/auth/logout`, and `POST /api/auth/password-change` require CSRF tokens. Login regenerates the session ID; logout destroys the server-side session.
-- `GET /api/auth/me` returns only the active user's public account fields.
-- `GET /api/users`, `POST /api/users`, `PATCH /api/users/:userId`, and the `POST /api/users/:userId/deactivate|reactivate` actions require an active Admin session and CSRF protection for writes.
-- Usernames are trimmed and normalized to lowercase. Passwords are Argon2id hashes, have a 12–128 character policy, and never appear in API responses. Every newly created account, including the bootstrap Admin, must change its initial password.
-- Session records are stored in MongoDB with an eight-hour lifetime. `SESSION_SECRET` must be a stable, private value. Secure cookies and proxy protocol trust are enabled only with `HTTPS_ENABLED=true` behind a trusted TLS-terminating proxy.
-- The first Admin is created by the one-time interactive `npm run create-admin` command inside the backend container. No default account is seeded.
-
-## Security approach
-
-- Use server-side password hashing with a vetted algorithm and parameters selected during implementation.
-- Require no login, account, or session to browse public component GET endpoints. Avoid creating a session just to serve public dashboard data.
-- Use protected sessions for authenticated functionality; choose secure cookie flags, session storage, and transport settings for the final LAN/TLS arrangement.
-- Select and implement CSRF defenses compatible with the session/authentication design for authenticated state-changing requests.
-- Rate-limit login attempts and avoid account-enumeration details in authentication errors.
-- Validate request bodies, path values, and query parameters at the backend boundary.
-- Exclude password hashes, session data, sensitive user information, transaction history, and administrative audit logs from public GET responses.
-- Keep stock transaction and audit records protected from unauthorized modification and deletion.
-- Use least-privilege database credentials and do not publish MongoDB ports to client networks.
-- Keep secrets in deployment/local environment configuration, not source control. The checked-in `.env.example` contains placeholders only.
-- Restrict network access to the internal LAN and configure host firewall rules accordingly.
-
-Milestone 2 resolves the authentication/session/CSRF choices above using Argon2id, Express sessions stored in MongoDB, `csrf-sync`, and a login rate limit. TLS termination and the trusted-proxy deployment remain environment-specific.
-
-## Unresolved design decisions
-
-See [requirements.md](./requirements.md#decisions-still-to-make) for the full list. In particular, finalize quantity precision, adjustment semantics, API contracts, photo storage, flexible attribute validation, audit retention, and LAN/TLS details before implementation.
+Do not invent initial component names, photos, quantities, or minimum levels. Flexible attribute validation/search behavior, adjustment representation, photo storage, low-stock equality behavior, account recovery, LAN TLS, and audit retention/export remain to be agreed as listed in [requirements.md](./requirements.md#decisions-still-to-make).

@@ -40,13 +40,14 @@ There is no public registration. Admins create accounts and set initial password
 
 ## Inventory rules
 
-- Keep components, users, stock transactions, and administrative audit logs in separate MongoDB collections.
+- Keep components, users, stock transactions, and administrative audit logs in separate PostgreSQL tables.
+- Use PostgreSQL 17 with TypeORM and explicit migrations. Disable schema synchronization in normal development and production; do not apply migrations implicitly on application startup.
 - Keep transaction history separate from component documents.
 - Each successful stock change records the component, authenticated user, server timestamp, previous quantity, new quantity, change amount, action type, and optional comment.
-- Save the resulting quantity change and its transaction record atomically in a MongoDB transaction.
-- Use a MongoDB replica set, including a single-node replica set for a single-server installation.
+- Save the resulting quantity change and its transaction record atomically in a PostgreSQL transaction.
+- Lock the component row or use a conditional update to reject stale concurrent writes; roll back the quantity and transaction together if either fails.
 - Prevent concurrent changes from silently overwriting one another. A conflicting/stale update must be rejected or safely retried; it must not be reported as successful unless both the quantity and transaction record are committed.
-- Reject invalid quantities and any stock-out or adjustment that would result in a quantity below zero.
+- Use integer quantities initially. Reject invalid quantities and any stock-out or adjustment that would result in a quantity below zero at both application and database boundaries.
 - Ordinary users must not be able to modify or delete existing transaction records.
 - Show low-stock status by comparing current quantity with the configured minimum stock level. The exact equality/display behavior should be confirmed before UI implementation.
 - Component definitions may include flexible attributes, but validation and supported attribute types need to be agreed before implementation.
@@ -67,7 +68,7 @@ Every transaction must be attributable to the authenticated user and use a serve
 - Authentication is not required to browse the public dashboard. Public browsing must not require account creation or start a session. Require authentication for stock transaction history and all data-changing operations.
 - Hash passwords with a suitable password-hashing algorithm. Never store or log plaintext passwords.
 - Protect authenticated sessions; use login rate limiting, safe error responses, and appropriate CSRF protection for authenticated state-changing requests.
-- Restrict access to the internal company LAN. Do not expose MongoDB to client devices.
+- Restrict access to the internal company LAN. Keep PostgreSQL on the private application network and do not expose it to client devices or the company LAN.
 - Keep secrets out of Git. Provide an `.env.example` containing placeholders only; real `.env` files and credentials must remain untracked and protected.
 - Validate all client input on the server and avoid returning internal errors, credentials, or database details to clients.
 - Keep stock transactions and administrative audit history protected against unauthorised modification or deletion.
@@ -82,12 +83,12 @@ Every transaction must be attributable to the authenticated user and use a serve
 6. A successful stock operation atomically updates the current quantity and appends the required transaction record.
 7. Invalid input, insufficient stock, and concurrent conflicting changes cannot produce negative stock or an unrecorded quantity change.
 8. Users and components needed by history can be deactivated or archived without erasing their historical references.
-9. The service is configured for MongoDB replica-set transactions and is accessible only through the intended LAN deployment.
+9. The service uses PostgreSQL transactions and is accessible only through the intended LAN deployment.
 
 ## Decisions still to make
 
 - Names, photos, starting quantities, and minimum stock levels for the initial 10 components.
-- Whether quantities are whole numbers or allow fractional precision, and the units/rounding rules.
+- Units and rounding rules for integer quantities, and whether fractional precision may be needed in a future schema change.
 - The exact adjustment workflow and representation.
 - Whether a quantity exactly equal to the minimum is considered low stock.
 - Supported flexible attribute types, validation rules, and whether attributes are searchable/filterable.

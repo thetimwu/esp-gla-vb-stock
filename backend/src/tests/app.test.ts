@@ -1,11 +1,8 @@
 import type { Logger } from "pino";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
-import session from "express-session";
 import { createApp } from "../app.js";
 import { createLogger } from "../config/logger.js";
-import type { AuthService } from "../services/authService.js";
-import type { UserManagementService } from "../services/userManagementService.js";
 import type {
   ComponentReader,
   PublicComponent,
@@ -14,7 +11,7 @@ import type {
 const logger: Logger = createLogger("silent");
 
 const component: PublicComponent = {
-  id: "507f1f77bcf86cd799439011",
+  id: "8a03ff64-6c8a-4b79-92e1-7104747064fd",
   displayName: "Example component",
   currentQuantity: 4,
   minimumStockLevel: 2,
@@ -33,32 +30,14 @@ function createTestApp(
     listPublic: vi.fn(async () => components),
     findPublicById: vi.fn(async () => overrides.detail ?? null),
   };
-  const authService: AuthService = {
-    authenticate: vi.fn(async () => null),
-    findActiveUser: vi.fn(async () => null),
-    changePassword: vi.fn(async () => false),
-  };
-  const userManagementService: UserManagementService = {
-    listUsers: vi.fn(async () => []),
-    createUser: vi.fn(async () => {
-      throw new Error("Not implemented in this test");
-    }),
-    updateUser: vi.fn(async () => {
-      throw new Error("Not implemented in this test");
-    }),
-    setUserActive: vi.fn(async () => {
-      throw new Error("Not implemented in this test");
-    }),
-  };
   const app = createApp({
-    isDatabaseConnected: () => overrides.connected ?? true,
+    checkDatabaseConnection: async () => {
+      if (overrides.connected === false) {
+        throw new Error("database unavailable");
+      }
+    },
     logger,
-    sessionSecret: "test-session-secret-with-more-than-32-characters",
-    sessionStore: new session.MemoryStore(),
-    httpsEnabled: false,
     componentReader: reader,
-    authService,
-    userManagementService,
   });
   return { app, reader };
 }
@@ -75,7 +54,7 @@ describe("GET /api/health", () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ status: "ok", database: "connected" });
-    expect(JSON.stringify(response.body)).not.toContain("mongodb");
+    expect(JSON.stringify(response.body)).not.toContain("postgres");
   });
 
   it("returns 503 when the database is disconnected", async () => {
@@ -100,6 +79,7 @@ describe("public component endpoints", () => {
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ components: [] });
     expect(reader.listPublic).toHaveBeenCalledOnce();
+    expect(response.headers["set-cookie"]).toBeUndefined();
   });
 
   it("supports the trailing-slash collection URL", async () => {
@@ -118,12 +98,13 @@ describe("public component endpoints", () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ component });
+    expect(response.headers["set-cookie"]).toBeUndefined();
   });
 
-  it("rejects malformed component IDs safely", async () => {
+  it("rejects malformed UUIDs before querying PostgreSQL", async () => {
     const { app, reader } = createTestApp();
 
-    const response = await request(app).get("/api/components/not-an-id");
+    const response = await request(app).get("/api/components/not-a-uuid");
 
     expect(response.status).toBe(400);
     expect(response.body.error.code).toBe("VALIDATION_ERROR");
@@ -131,11 +112,11 @@ describe("public component endpoints", () => {
     expect(response.body).not.toHaveProperty("stack");
   });
 
-  it("returns 404 for a valid ID with no matching component", async () => {
+  it("returns 404 for a valid UUID with no matching component", async () => {
     const { app } = createTestApp();
 
     const response = await request(app).get(
-      "/api/components/507f1f77bcf86cd799439011",
+      "/api/components/8a03ff64-6c8a-4b79-92e1-7104747064fd",
     );
 
     expect(response.status).toBe(404);
@@ -151,29 +132,9 @@ describe("public component endpoints", () => {
       findPublicById: vi.fn().mockResolvedValue(null),
     };
     const app = createApp({
-      isDatabaseConnected: () => true,
+      checkDatabaseConnection: async () => {},
       logger,
-      sessionSecret: "test-session-secret-with-more-than-32-characters",
-      sessionStore: new session.MemoryStore(),
-      httpsEnabled: false,
       componentReader: reader,
-      authService: {
-        authenticate: vi.fn(async () => null),
-        findActiveUser: vi.fn(async () => null),
-        changePassword: vi.fn(async () => false),
-      },
-      userManagementService: {
-        listUsers: vi.fn(async () => []),
-        createUser: vi.fn(async () => {
-          throw new Error("Not implemented in this test");
-        }),
-        updateUser: vi.fn(async () => {
-          throw new Error("Not implemented in this test");
-        }),
-        setUserActive: vi.fn(async () => {
-          throw new Error("Not implemented in this test");
-        }),
-      },
     });
 
     const response = await request(app).get("/api/components");
@@ -187,14 +148,16 @@ describe("public component endpoints", () => {
 });
 
 describe("configuration validation", () => {
-  it("rejects invalid ports and MongoDB URLs", async () => {
+  it("rejects invalid database ports and missing database credentials", async () => {
     const { parseEnvironment } = await import("../config/env.js");
 
     expect(() =>
       parseEnvironment({
         PORT: "70000",
-        MONGODB_URI: "mongodb-not-a-url",
-        SESSION_SECRET: "test-session-secret-with-more-than-32-characters",
+        DB_PORT: "70000",
+        DB_NAME: "",
+        DB_USER: "inventory",
+        DB_PASSWORD: "secret",
       } as NodeJS.ProcessEnv),
     ).toThrow();
   });

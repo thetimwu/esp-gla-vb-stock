@@ -1,12 +1,9 @@
 import type { Server } from "node:http";
-import mongoose from "mongoose";
-import MongoStore from "connect-mongo";
 import { createApp } from "./app.js";
-import { SESSION_TTL_SECONDS } from "./middleware/session.js";
 import {
+  checkDatabaseConnection,
   connectToDatabase,
   disconnectFromDatabase,
-  isDatabaseConnected,
 } from "./config/database.js";
 import { parseEnvironment } from "./config/env.js";
 import { logger } from "./config/logger.js";
@@ -22,21 +19,11 @@ async function closeServer(server: Server): Promise<void> {
 
 async function startServer(): Promise<void> {
   const environment = parseEnvironment();
-  await connectToDatabase(environment.MONGODB_URI);
-  const sessionStore = MongoStore.create({
-    client: mongoose.connection.getClient(),
-    collectionName: "sessions",
-    ttl: SESSION_TTL_SECONDS,
-    autoRemove: "native",
-    touchAfter: 60,
-  });
+  await connectToDatabase();
 
   const app = createApp({
-    isDatabaseConnected,
+    checkDatabaseConnection,
     logger,
-    sessionSecret: environment.SESSION_SECRET,
-    sessionStore,
-    httpsEnabled: environment.HTTPS_ENABLED,
   });
 
   const server = app.listen(environment.PORT, () => {
@@ -49,7 +36,6 @@ async function startServer(): Promise<void> {
     shuttingDown = true;
     logger.info({ signal }, "Shutting down");
     void closeServer(server)
-      .then(() => sessionStore.close())
       .then(disconnectFromDatabase)
       .then(() => {
         process.exitCode = 0;

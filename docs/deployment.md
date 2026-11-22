@@ -2,40 +2,73 @@
 
 ## Deployment goals
 
-The initial installation runs on a Windows PC on the internal company LAN using Docker Desktop and Docker Compose. The application must not be reachable from the public internet, and client devices must not have direct access to MongoDB. The design should remain portable to Ubuntu Server.
+The initial installation is planned for a Windows PC on the internal company LAN using Docker Desktop and Docker Compose. The application must not be reachable from the public internet, and client devices must not have direct access to PostgreSQL. The deployment should remain portable to Ubuntu Server.
 
-No containers or host configuration are created by this document. Exact ports, hostnames, TLS arrangements, backup tooling, and operating procedures remain to be agreed.
+The checked-in Compose stack uses PostgreSQL 17, persists database files in the named `postgres_data` volume, and publishes PostgreSQL only on `127.0.0.1:5432` for local host-based development. Production LAN access, TLS, firewall rules, backups, and recovery objectives require approval before release.
 
-## Ubuntu development environment
+## Configuration and prerequisites
 
-Develop on Ubuntu/Linux with VS Code and GitHub Copilot Agent. The eventual development setup will use the agreed React/TypeScript/Vite frontend, Node.js/Express/TypeScript backend, MongoDB, and Docker Compose. Keep environment-specific configuration out of source control and use `.env.example` as a placeholder-only guide.
+- Node.js 22 or 24, npm, and Docker Compose for development.
+- Copy `.env.example` to `.env`; replace both the application credentials (`DB_USER`, `DB_PASSWORD`) and bootstrap administrator credentials (`POSTGRES_ADMIN_USER`, `POSTGRES_ADMIN_PASSWORD`) with unique private values.
+- Keep `.env`, database credentials, and backups out of source control. The checked-in `.env.example` contains placeholders only.
+- Local `.env` defaults `DB_HOST=127.0.0.1`; Compose overrides the backend host to `postgres` on the private Docker network.
 
-### Start the local stack
+Environment values used by the backend are `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`. `API_HOST_BIND` and `API_HOST_PORT` control the backend host binding/port. PostgreSQL 17 is declared as `postgres:17-alpine` in Compose. A first-volume initialization script creates the separate application role with permissions to apply migrations in the database schema; the backend never uses the bootstrap administrator account. The script runs only when the named volume is first initialized. Credentials are only read from environment configuration and are not logged.
+
+## Start PostgreSQL and the backend with Docker Compose
 
 From the project root:
 
-1. Copy `.env.example` to `.env`; replace all placeholder values with unique local database credentials. Ensure the URI username/password match the Mongo app-user variables and URL-encode reserved characters in the URI.
-2. Generate a stable session secret with `openssl rand -hex 32` and set `SESSION_SECRET` in `.env`. Keep it private and unchanged across backend restarts.
-3. Run `docker compose up --build`.
-4. Create the first Admin with `docker compose exec -it backend npm run create-admin`. Enter the username and password interactively; the password prompt is hidden. This command refuses to create a duplicate initial Admin; the bootstrap Admin must change that password after logging in.
-5. Check `http://localhost:3000/api/health` and `http://localhost:3000/api/components`.
-6. Stop with `docker compose down`. This preserves the named MongoDB data volume; do not use `down -v` for normal shutdown.
+1. Copy `.env.example` to `.env` and set `DB_USER` and `DB_PASSWORD`.
+2. Start the database and wait until it is healthy:
 
-Compose starts MongoDB with authentication and a single-node replica set named `rs0`. On the first fresh data volume, MongoDB's official initialization flow creates the root account and runs the checked-in initialization script to create a database-scoped `readWrite` account. The Mongo health check idempotently initiates the replica set and waits for it to become primary; the backend waits for this healthy status before starting. The API uses the application account, and the MongoDB port is not published to the host.
+   ```sh
+   docker compose up -d postgres
+   docker compose ps
+   ```
 
-The Mongo initialization script only runs against an empty data directory. Changing user/password variables in `.env` does not rotate existing credentials. Use the approved MongoDB credential-rotation procedure when changing them. The generated replica-set keyfile is ephemeral and appropriate only for this single-node container setup; configure a managed, persistent keyfile before expanding to multiple replica-set members.
+3. Build the backend image and apply pending migrations:
 
-Express sessions are stored in MongoDB's `sessions` collection and expire after eight hours. Do not change `SESSION_SECRET` during normal restarts, because doing so invalidates existing cookies. `HTTPS_ENABLED=false` is appropriate for local HTTP. Set it to `true` only when HTTPS terminates at a trusted reverse proxy; the application then marks cookies Secure and trusts the proxy's forwarded protocol.
+   ```sh
+   docker compose build backend
+   docker compose run --rm backend npm run migration:run
+   ```
 
-The API issues session-backed CSRF tokens at `GET /api/auth/csrf-token`. Clients must send the returned value in the `x-csrf-token` header on login, logout, password changes, and all other state-changing requests. Login rotates both the session ID and CSRF token.
+4. Start or rebuild the backend:
 
-### Backend development and checks
+   ```sh
+   docker compose up -d --build backend
+   ```
 
-From `backend/`, use Node.js 22 or 24 and run:
+5. Check the live PostgreSQL-backed health endpoint and public component endpoint:
+
+   ```sh
+   curl --fail http://localhost:3000/api/health
+   curl --fail http://localhost:3000/api/components
+   ```
+
+The backend waits for PostgreSQL readiness, but migrations are intentionally not run automatically during startup. The health endpoint performs a database query and returns 503 when PostgreSQL is unavailable. The API is bound to localhost by default; change `API_HOST_BIND` only to an approved LAN host address for an authorised deployment. PostgreSQL remains localhost-only even in that configuration and is not exposed to the LAN.
+
+Use `docker compose down` for a normal stop; it preserves `postgres_data`. Do not use volume-removal commands as part of routine shutdown. The official image's administrator configuration and application-role initialization apply only when initializing an empty volume. Editing `.env` does not rotate existing PostgreSQL credentials; use an approved database credential-rotation procedure.
+
+## Run the backend directly on the host
+
+The database port is published on loopback to support local host-based development. With PostgreSQL running, configure the database variables in `.env`, then from `backend/`:
 
 ```sh
 npm ci
+npm run migration:run:dev
 npm run dev
+```
+
+`dotenv` loads the root `.env` for local commands. For the integrated stack, use Docker Compose as described above.
+
+## Backend checks
+
+From `backend/`:
+
+```sh
+npm ci
 npm test
 npm run typecheck
 npm run lint
@@ -43,78 +76,70 @@ npm run format:check
 npm run build
 ```
 
-`npm run dev` expects `MONGODB_URI` to point to a reachable replica set. The Compose MongoDB service is intentionally not published to the host; use `docker compose up --build` for the integrated local stack, or configure an independently reachable development replica set for a host-run backend process. No database or application secrets are provided by the repository.
+Create a disposable test database owned by the application role, then set `DB_NAME` to it for tests. For example, with the Compose database running:
 
-Exact deployment versions and production-specific configuration should be reviewed before company LAN release.
+```sh
+docker compose exec postgres sh -c 'createdb --username "$POSTGRES_USER" --owner "$DB_USER" gate_inventory_test'
+DB_NAME=gate_inventory_test npm test
+```
 
-## Windows host deployment with Docker Desktop
+`npm test` includes PostgreSQL integration tests and applies migrations to the configured database. Tests create and remove uniquely identified fixture rows; they do not clean unrelated records.
 
-### Preparation
+## Migrations and releases
 
-- Select a supported Windows edition and install/configure Docker Desktop according to company policy. Confirm the required virtualization and WSL 2 or Hyper-V prerequisites with the host administrator.
-- Keep the host patched and access-controlled. Use an account with the minimum permissions required to administer the deployment.
-- Agree on a stable LAN hostname or reserved IP, application port, TLS/certificate approach, and firewall owner before exposing the service to users.
-- Prepare an environment file on the host from the placeholder template. Set unique production secrets and database credentials outside source control; restrict file access.
+Schema changes must be delivered as reviewed TypeORM migrations. Do not enable TypeORM `synchronize`, and do not couple schema migration to the API's normal start command.
 
-### Service topology
+For a release that includes a migration:
 
-- Run the web application and MongoDB through Docker Compose.
-- Configure MongoDB as a single-node replica set for the initial single-server deployment so transaction-backed stock writes are supported.
-- Persist MongoDB data in a named Docker volume or another explicitly managed persistent location. Do not depend on the container writable layer for database persistence.
-- Keep MongoDB on an internal Docker network. Do not publish the MongoDB port to the LAN.
-- Publish only the application endpoint required by LAN clients, and limit inbound host firewall rules to the internal company network and agreed port.
-- Do not configure internet port forwarding or public DNS for this application.
+1. Take and verify a database backup.
+2. Build the reviewed backend image.
+3. Run `docker compose run --rm backend npm run migration:run`.
+4. Recreate the service with `docker compose up -d --build backend`.
+5. Check `/api/health`, `/api/components`, and application logs.
 
-The exact Compose file, image versions, ports, network names, health checks, and resource limits will be decided and tested during implementation.
+## Windows host deployment and LAN access
 
-### LAN access and authentication
+- Install and configure Docker Desktop according to company policy, including approved virtualization prerequisites.
+- Use a host account with minimum required administrative privileges and keep the host patched.
+- Prepare an environment file outside source control and restrict access to it.
+- Publish only the API endpoint needed by LAN clients, and limit inbound host firewall rules to the authorised company network and agreed port.
+- Do not configure internet port forwarding or public DNS.
+- Keep PostgreSQL on the internal Docker network; its Compose host binding is loopback-only.
+- Coordinate TLS termination, certificates, DNS, firewall ownership, and remote/VPN access with the company administrator.
 
-Users access the application through the approved LAN hostname/IP and application endpoint. Network/firewall controls restrict reachability to the authorised internal LAN. Any visitor on that LAN can view, search, and filter the component dashboard, photos, current quantities, low-stock warnings, and non-sensitive component details without logging in, creating an account, or starting a session.
+Any visitor on the authorised LAN may browse public component information without login or session. Authentication remains required for every write and protected read; Admin authorization is required for administrative operations. These functional requirements remain unchanged but authentication is not implemented in the database migration milestone. LAN-only reachability does not replace future backend authentication and authorization.
 
-Authentication is required before any data-changing operation. Engineer and Admin capabilities, transaction-history access, and all other protected reads require authentication; Admin-only actions and audit-log access additionally require the Admin role. The backend must enforce these rules, and public GET responses must not reveal credentials, session data, sensitive user information, transaction history, or administrative audit logs. LAN-only reachability does not replace these application-level controls.
+## Persistent data, photos, and backup
 
-TLS on the LAN, certificate issuance and renewal, DNS, firewall rules, and remote/VPN access policy require coordination with the company administrator; do not assume plaintext HTTP is acceptable for production.
+PostgreSQL data persists in the named `postgres_data` volume across container recreation and host reboots. Container replacement is not a backup. Photo storage has not been selected; before photo uploads are implemented, decide its persistent storage, file limits, access controls, and backup coverage.
 
-## Persistent storage and photos
+Create a PostgreSQL custom-format backup:
 
-MongoDB data must survive container recreation, image upgrades, and host reboots by using a managed persistent volume/location. Container replacement must not be treated as a backup.
+```sh
+docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > gate-inventory.dump
+```
 
-Photo storage has not been selected. Before implementation, decide whether photos are stored in MongoDB, on a persistent filesystem/volume, or in another approved storage service. Whichever approach is selected must define size/type limits, access controls, backup coverage, and migration behavior. Do not place unbacked uploads in an ephemeral container filesystem.
+Keep the backup separately from the Docker host's primary data and protect it with access controls and encryption where company policy requires. Define backup frequency, retention, off-host copy, key management, recovery point objective, and recovery time objective before production use. Monitor backup completion and periodically verify restoration.
 
-## Backup and restore
+### Restore
 
-### Backup requirements
+Restore replaces database objects in the selected database. Confirm the target database and preserve an additional copy of its current state before proceeding:
 
-- Back up the database and any separately stored component photos/configuration needed to restore the application.
-- Use a MongoDB-aware backup method that produces a consistent, restorable backup for the selected replica-set deployment.
-- Store backups separately from the host's primary Docker data location; protect them with appropriate access controls and encryption at rest where required by company policy.
-- Define backup frequency, retention, off-host copy, encryption/key management, recovery point objective, and recovery time objective before production use.
-- Monitor backup completion and periodically test restoration. A backup that has not been restore-tested is not a verified recovery plan.
+```sh
+docker compose stop backend
+docker compose exec -T postgres sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists --no-owner' < gate-inventory.dump
+docker compose up -d backend
+```
 
-### Restore outline
-
-1. Restrict or stop application access to prevent writes during recovery.
-2. Preserve the current data directory/volume before replacing or restoring anything, so the existing state is not destroyed inadvertently.
-3. Restore the database using the selected MongoDB-aware procedure and restore photo files and required configuration from the matching backup.
-4. Start the replica set and application using the documented deployment configuration.
-5. Verify database health, authentication, representative component quantities, transaction history, and photo availability.
-6. Re-enable LAN access only after verification, and record the recovery event.
-
-Exact backup/restore commands, tool versions, schedules, retention, and recovery objectives are open operational decisions and must be documented and tested before production.
-
-## Updates and operations
-
-Deployments should use reviewed, versioned application and container images. Back up before upgrades that may change persistent data. Document the deployed version, configuration changes, and recovery path. Monitor service health, available disk space, backup status, and application/database logs without logging passwords, session secrets, or other sensitive values.
+Verify database health and representative component data before reopening LAN access. Restore any separately stored photos/configuration from the matching backup.
 
 ## Future migration to Ubuntu Server
 
-The deployment should avoid Windows-only application behavior and keep configuration portable. To migrate:
+1. Provision and secure the approved Ubuntu host, Docker Engine/Compose, LAN identity, firewall, TLS, and persistent storage.
+2. Stop writes and take a verified PostgreSQL backup plus any matching photo/configuration backup.
+3. Transfer backups securely and restore them to PostgreSQL 17 or a reviewed compatible version.
+4. Apply the Ubuntu host's protected environment configuration and run pending TypeORM migrations.
+5. Verify health, component quantities, access controls, and photo availability.
+6. Switch the agreed LAN hostname/IP only after validation; retain the old host and backups through the acceptance period.
 
-1. Provision and secure an approved Ubuntu Server host, Docker Engine/Compose, LAN identity, firewall rules, and TLS arrangement.
-2. Stop writes on the Windows deployment and take a verified MongoDB backup plus a matching photo/configuration backup.
-3. Transfer backups securely and restore them to a MongoDB replica set on Ubuntu.
-4. Apply the Ubuntu host's protected environment configuration and persistent storage setup.
-5. Verify component counts/quantities, transaction and audit history, user access, photos, and application health.
-6. Switch the agreed LAN hostname/IP routing only after validation; retain the old host and backup until acceptance is complete.
-
-Downtime, data cutover approach, hostname/IP changes, rollback window, and responsibility for migration remain to be agreed.
+Downtime, cutover approach, rollback window, hostname/IP changes, and migration ownership remain to be agreed.
