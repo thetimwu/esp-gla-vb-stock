@@ -76,23 +76,44 @@ From `backend/`:
 
 ```sh
 npm ci
-npm test
 npm run typecheck
 npm run lint
 npm run format:check
 npm run build
 ```
 
-Create a disposable test database owned by the application role, then set `DB_NAME` to it for tests. For example, with the Compose database running:
+Use Node.js 24 and a separate, disposable PostgreSQL test instance. The integration suite refuses to start unless `NODE_ENV=test`, `DB_HOST` is loopback, and `DB_NAME` contains a standalone `test` token. Never point it at development or production data. For example:
 
 ```sh
-docker compose exec postgres sh -c 'createdb --username "$POSTGRES_USER" --owner "$DB_USER" gate_inventory_test'
-DB_NAME=gate_inventory_test npm test
+docker run --rm --detach \
+  --name gate-inventory-test-postgres \
+  --publish 127.0.0.1:55439:5432 \
+  --tmpfs /var/lib/postgresql/data:rw,size=1g \
+  --env POSTGRES_USER=gate_test_runner \
+  --env POSTGRES_PASSWORD=temporary-test-only \
+  --env POSTGRES_DB=gate_inventory_test \
+  postgres:17-alpine
+
+docker exec gate-inventory-test-postgres pg_isready \
+  -U gate_test_runner -d gate_inventory_test
+
+NODE_ENV=test \
+DB_HOST=127.0.0.1 \
+DB_PORT=55439 \
+DB_NAME=gate_inventory_test \
+DB_USER=gate_test_runner \
+DB_PASSWORD=temporary-test-only \
+SESSION_SECRET=unit-test-session-secret-with-more-than-32-characters \
+npm test
 ```
 
-`npm test` includes PostgreSQL integration tests and applies migrations to the configured database. Use only a disposable test database: integration tests create and remove fixture rows and run pending migrations there.
+`npm test` runs both the PostgreSQL integration suite and isolated API/auth tests. `npm run test:integration` runs only the integration suite. Both apply TypeORM migrations to the configured test database and create/remove only uniquely identified fixture rows. The example uses a temporary filesystem, not a Docker volume; stopping the named disposable container discards only its test data.
 
 For a host-based development setup, run the migration then execute `npm run admin:create` from `backend/` to create the first administrator. The password is entered without terminal echo. Do not put an administrator password in a command-line argument or source-controlled file.
+
+### Dependency audit
+
+The current production audit reports three moderate advisories in the TypeORM dependency chain (`typeorm@0.3.31` → `glob@10.5.0` → `minimatch@9.0.9`): a glob cancellation bypass and minimatch glob-pattern amplification. The API configures entities and migrations explicitly and does not accept glob patterns from requests, which limits exposure to those code paths but does not remove the dependency advisory. npm currently recommends TypeORM 1.1.3, a breaking major upgrade. Do not apply that fix automatically; first review TypeORM 1 migration/API compatibility with PostgreSQL 17 and Node 24, then rerun the integration suite. Adopt a compatible patched TypeORM 0.3 release if one becomes available.
 
 ## Migrations and releases
 

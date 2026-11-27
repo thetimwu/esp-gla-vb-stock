@@ -14,6 +14,7 @@
     "migration:run:dev": "tsx src/scripts/migrate.ts",
     "admin:create": "tsx src/scripts/createAdmin.ts",
     "test": "vitest run",
+    "test:integration": "vitest run src/tests/database.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
