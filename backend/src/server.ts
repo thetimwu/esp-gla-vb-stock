@@ -7,6 +7,7 @@ import {
 } from "./config/database.js";
 import { parseEnvironment } from "./config/env.js";
 import { logger } from "./config/logger.js";
+import { closeSessionPool } from "./config/sessionStore.js";
 
 async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -37,6 +38,7 @@ async function startServer(): Promise<void> {
     logger.info({ signal }, "Shutting down");
     void closeServer(server)
       .then(disconnectFromDatabase)
+      .then(closeSessionPool)
       .then(() => {
         process.exitCode = 0;
       })
@@ -53,5 +55,6 @@ async function startServer(): Promise<void> {
 void startServer().catch(async (error: unknown) => {
   logger.fatal({ err: error }, "Unable to start Inventory API");
   await disconnectFromDatabase();
+  await closeSessionPool();
   process.exitCode = 1;
 });

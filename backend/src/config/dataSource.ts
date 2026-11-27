@@ -6,6 +6,7 @@ import { Component } from "../entities/Component.js";
 import { StockTransaction } from "../entities/StockTransaction.js";
 import { User } from "../entities/User.js";
 import { InitialInventorySchema1710000000000 } from "../migrations/1710000000000-InitialInventorySchema.js";
+import { CreateSessionsTable1720000000000 } from "../migrations/1720000000000-CreateSessionsTable.js";
 
 const environment = parseEnvironment();
 
@@ -17,7 +18,10 @@ export const AppDataSource = new DataSource({
   username: environment.DB_USER,
   password: environment.DB_PASSWORD,
   entities: [User, Component, StockTransaction, AuditLog],
-  migrations: [InitialInventorySchema1710000000000],
+  migrations: [
+    InitialInventorySchema1710000000000,
+    CreateSessionsTable1720000000000,
+  ],
   synchronize: false,
   migrationsRun: false,
   logging: false,

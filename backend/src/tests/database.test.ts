@@ -76,6 +76,14 @@ describe("PostgreSQL-backed public API", () => {
     expect(response.body).toEqual({ status: "ok", database: "connected" });
   });
 
+  it("creates PostgreSQL-backed session storage through a migration", async () => {
+    const [sessionTable] = await AppDataSource.query(
+      `SELECT to_regclass('public.sessions') AS table_name`,
+    );
+
+    expect(sessionTable.table_name).toBe("sessions");
+  });
+
   it("lists active components from PostgreSQL with only public fields", async () => {
     const response = await request(app).get("/api/components");
 

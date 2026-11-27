@@ -9,7 +9,7 @@
 - **Initial host:** Windows PC on the internal company LAN, using Docker Desktop.
 - **Future target:** Ubuntu Server.
 
-The database schema is a foundation only. This migration milestone does not implement authentication, user-management APIs, stock modifications, audit APIs, or the frontend.
+The backend includes public inventory reads, session-based authentication, access control, component/user administration, and protected history reads. The React frontend and stock mutation workflows remain unimplemented.
 
 ## System boundaries
 
@@ -43,16 +43,18 @@ The dashboard is available to every visitor on the authorised company LAN withou
 
 Every protected request checks authentication and active-account state on the backend. ADMIN-only endpoints additionally check the role in backend middleware/service authorization. A frontend login redirect preserves the intended protected URL/action, then resumes it after successful login if still valid. No dashboard route or public GET redirects to login.
 
-The public component response is an explicit allowlist: component ID, display name, description, current quantity, minimum stock level, and photo URL/reference. It excludes flexible/private attributes, user data, transaction and audit records, sessions, credentials, and security configuration. Total stock statistics and low-stock component counts can be derived from this public component collection; do not broaden public access to protected data to compute them. A component is low-stock when current quantity is strictly less than its minimum.
+The public component response is an explicit allowlist: component ID, display name, description, current quantity, minimum stock level, and photo URL/reference. It excludes flexible/private attributes, user data, transaction and audit records, sessions, credentials, and security configuration. `/api/statistics` returns public aggregate counts from active components only. A component is low-stock when current quantity is strictly less than its minimum.
+
+Authentication uses an HttpOnly, SameSite=Strict session cookie backed by the PostgreSQL `sessions` table. Session IDs rotate on login; each protected request reloads the account and checks that it remains active and has the required role. Login and authenticated state-changing requests require a synchronizer CSRF token. Login attempts are rate-limited per client IP. No session middleware is applied to public dashboard endpoints.
 
 ## Backend responsibilities
 
 Keep HTTP routing, request validation, business rules, authorization, persistence, and response/error mapping distinct. Routes/controllers must not bypass business rules by writing directly to repositories.
 
-- Keep `GET /api/health`, `GET /api/components`, and `GET /api/components/:id` public and read-only. Add public statistics only from the same public inventory data boundary.
+- Keep `GET /api/health`, `GET /api/components`, `GET /api/components/:id`, and `GET /api/statistics` public and read-only.
 - Public component responses include only component UUID, name as `displayName`, description, current quantity, minimum stock level, and photo reference. They do not expose JSONB attributes, credentials, sessions, users, transactions, or audit data.
 - Validate UUID route parameters before querying PostgreSQL and return safe errors without exposing database internals.
-- Require authentication and an active account for every stock write and transaction-history read. Require ADMIN for user administration, component administration, archiving, application settings, and audit-log access.
+- Require authentication and an active account for transaction-history reads. Require ADMIN for user administration, component administration, archiving, and audit-log access. No stock write or settings endpoints are implemented in this milestone.
 - Keep stock changes as domain operations: validate input, verify authorization, lock or conditionally update the component, and append its transaction atomically in one PostgreSQL transaction.
 - Keep transaction and audit history append-only through ordinary application workflows. Deactivate users and archive components instead of deleting historical references.
 - Use explicit TypeORM migrations. `synchronize` and automatic migration-on-startup remain disabled.
@@ -60,7 +62,7 @@ Keep HTTP routing, request validation, business rules, authorization, persistenc
 
 ## PostgreSQL entities and constraints
 
-The initial migration creates four tables. No users, components, stock transactions, audit logs, or initial quantities are seeded.
+The inventory migration creates four tables; a separate TypeORM migration adds the PostgreSQL-backed `sessions` table. No users, components, stock transactions, audit logs, or initial quantities are seeded.
 
 ### `users`
 
@@ -96,7 +98,12 @@ The API keeps the existing public response shape (`displayName`, `photoUrl`); th
 - JSONB details and server-generated creation timestamp.
 - Entity/time and user/time indexes.
 
-Ordinary application workflows must deactivate users and archive components rather than deleting records referenced by history. Stock and audit records are append-only for ordinary users. Session storage is deliberately not implemented in this milestone; when authentication is implemented, use a PostgreSQL-compatible server-side session store.
+### `sessions`
+
+- Session ID primary key, serialized session JSON, and expiry timestamp with an expiry index.
+- Accessed only by `connect-pg-simple`; public dashboard routes do not initialize sessions.
+
+Ordinary application workflows must deactivate users and archive components rather than deleting records referenced by history. Stock and audit records are append-only for ordinary users. The API does not auto-create the session table or run migrations at startup. An initial or recovery ADMIN is created explicitly using the interactive `admin:create` CLI after migrations have run. It refuses to create another bootstrap administrator while any active ADMIN exists.
 
 ## Future stock transaction and concurrency design
 
@@ -117,38 +124,27 @@ This design prevents concurrent requests from silently overwriting one another a
 - `GET /api/components` and trailing-slash equivalent return `{ "components": [] }` when no active components exist.
 - `GET /api/components/:id` returns a public component or a safe 404; malformed UUIDs are rejected with 400 before querying.
 - Public list/detail responses contain the allowlisted component description as well as current stock, minimum level, name, and photo reference. They remain session-free.
-- No auth, user-management, stock modification, or audit endpoints are exposed.
+- No stock modification endpoints are exposed.
 
-### 1. Public dashboard milestone
+### Milestone 2: public data, authentication, and permissions
 
-- Build the React dashboard against the public component endpoints without a login gate.
-- Present inventory search/filter, descriptions/photos, total quantity statistics, low-stock count and below-minimum components. Derive statistics only from public inventory responses.
-- Use semantic, accessible controls and keep public browsing session-free.
-- Test anonymous list/detail reads, public response allowlisting, statistics/low-stock calculations, and absence of login redirects.
+- Public endpoints: `GET /api/components`, `GET /api/components/:id`, and `GET /api/statistics`; no session is created for these requests.
+- Authentication endpoints: `GET /api/auth/csrf-token`, `POST /api/auth/login`, `GET /api/auth/session`, and `POST /api/auth/logout`.
+- Protected history endpoints: `GET /api/transactions` for active ENGINEER/ADMIN users and `GET /api/admin/audit-logs` for ADMIN users.
+- ADMIN component endpoints: `GET /api/admin/components`, `GET /api/admin/components/:id`, `POST /api/components`, and `PATCH /api/components/:id` for definitions, minimum levels, photo references, attributes, and archive state. Quantity is deliberately not accepted.
+- ADMIN user endpoints: `GET/POST /api/admin/users` and `PATCH /api/admin/users/:userId`. Responses never include password hashes.
+- All state-changing routes require a valid CSRF token. Role and active-account checks are backend middleware; deactivation takes effect on the next protected request.
+- `POST /api/auth/login` is limited to 10 attempts per IP per 15-minute window.
+- Do not add a React frontend or stock mutation endpoints as part of this milestone.
 
-### 2. Authentication and protected-action milestone
-
-- Implement login/logout and identity/session handling with protected sessions, login rate limiting, safe errors, and the selected CSRF defense for authenticated writes.
-- Use a PostgreSQL-compatible server-side session store; public dashboard requests must not create sessions.
-- Check authentication and active-account status in backend middleware for every protected read/write. Require a role check for ADMIN-only routes.
-- Prompt/redirect to login only when an anonymous visitor attempts a protected action. Preserve and resume the intended action after login when safe and still authorized.
-- Test login/session behavior, unauthorized access, deactivated accounts, and return-to-action behavior.
-
-### 3. Stock operations and history milestone
+### Milestone 3: stock operations
 
 - Add authenticated stock-in, stock-out, and agreed adjustment workflows for ENGINEER and ADMIN users.
-- Add transaction-history reads for authenticated ENGINEER and ADMIN users.
 - Persist each quantity change and transaction record atomically using the row-lock/conditional-update design above.
 - Test engineer/admin stock permissions, validation, insufficient stock, concurrent updates, transaction atomicity, and anonymous history/write denial.
-
-### 4. Administration milestone
-
-- Add ADMIN-only component create/edit/archive, photo management, minimum-level management, user create/edit/role assignment/deactivation/reactivation, application settings, and audit-log reads.
-- Ensure all admin route handlers enforce authorization in the backend, irrespective of React control visibility.
-- Test that Engineers and anonymous visitors are denied each administrative capability and that Admin workflows preserve history.
 
 The exact authentication/API contracts, adjustment representation, account recovery, photo storage, audit coverage, and other unresolved product/security decisions remain governed by [requirements.md](./requirements.md). Do not implement behavior depending on an unresolved decision until it is agreed.
 
 ## Open product decisions
 
-Do not invent initial component names, photos, quantities, or minimum levels. Flexible attribute validation/search behavior, adjustment representation, photo storage, low-stock equality behavior, account recovery, LAN TLS, and audit retention/export remain to be agreed as listed in [requirements.md](./requirements.md#decisions-still-to-make).
+Do not invent initial component names, photos, quantities, or minimum levels. Flexible attribute validation/search behavior, adjustment representation, photo storage, account recovery, LAN TLS/proxy configuration, and audit retention/export remain to be agreed as listed in [requirements.md](./requirements.md#decisions-still-to-make).

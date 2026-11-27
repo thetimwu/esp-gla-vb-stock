@@ -13,7 +13,7 @@ The checked-in Compose stack uses PostgreSQL 17, persists database files in the 
 - Keep `.env`, database credentials, and backups out of source control. The checked-in `.env.example` contains placeholders only.
 - Local `.env` defaults `DB_HOST=127.0.0.1`; Compose overrides the backend host to `postgres` on the private Docker network.
 
-Environment values used by the backend are `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`. `API_HOST_BIND` and `API_HOST_PORT` control the backend host binding/port. PostgreSQL 17 is declared as `postgres:17-alpine` in Compose. A first-volume initialization script creates the separate application role with permissions to apply migrations in the database schema; the backend never uses the bootstrap administrator account. The script runs only when the named volume is first initialized. Credentials are only read from environment configuration and are not logged.
+Environment values used by the backend are `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, and `SESSION_SECRET`. Set `SESSION_SECRET` to a unique cryptographically random value of at least 32 characters. `TRUST_PROXY_HOPS` defaults to `0`; set it to the exact number of trusted reverse-proxy hops only when the backend port is firewalled to those proxies. Production must terminate TLS at the trusted proxy because production session cookies are Secure. `API_HOST_BIND` and `API_HOST_PORT` control the backend host binding/port. PostgreSQL 17 is declared as `postgres:17-alpine` in Compose. A first-volume initialization script creates the separate application role with permissions to apply migrations in the database schema; the backend never uses the bootstrap administrator account. The script runs only when the named volume is first initialized. Credentials are only read from environment configuration and are not logged.
 
 ## Start PostgreSQL and the backend with Docker Compose
 
@@ -34,17 +34,24 @@ From the project root:
    docker compose run --rm backend npm run migration:run
    ```
 
-4. Start or rebuild the backend:
+4. Create the first application administrator from an interactive terminal. This prompts for the username and a non-echoed password, hashes the password, and refuses if an active ADMIN already exists:
+
+   ```sh
+   docker compose run --rm backend node dist/scripts/createAdmin.js
+   ```
+
+5. Start or rebuild the backend:
 
    ```sh
    docker compose up -d --build backend
    ```
 
-5. Check the live PostgreSQL-backed health endpoint and public component endpoint:
+6. Check the live PostgreSQL-backed health, public component, and statistics endpoints:
 
    ```sh
    curl --fail http://localhost:3000/api/health
    curl --fail http://localhost:3000/api/components
+   curl --fail http://localhost:3000/api/statistics
    ```
 
 The backend waits for PostgreSQL readiness, but migrations are intentionally not run automatically during startup. The health endpoint performs a database query and returns 503 when PostgreSQL is unavailable. The API is bound to localhost by default; change `API_HOST_BIND` only to an approved LAN host address for an authorised deployment. PostgreSQL remains localhost-only even in that configuration and is not exposed to the LAN.
@@ -83,7 +90,9 @@ docker compose exec postgres sh -c 'createdb --username "$POSTGRES_USER" --owner
 DB_NAME=gate_inventory_test npm test
 ```
 
-`npm test` includes PostgreSQL integration tests and applies migrations to the configured database. Tests create and remove uniquely identified fixture rows; they do not clean unrelated records.
+`npm test` includes PostgreSQL integration tests and applies migrations to the configured database. Use only a disposable test database: integration tests create and remove fixture rows and run pending migrations there.
+
+For a host-based development setup, run the migration then execute `npm run admin:create` from `backend/` to create the first administrator. The password is entered without terminal echo. Do not put an administrator password in a command-line argument or source-controlled file.
 
 ## Migrations and releases
 
@@ -107,7 +116,7 @@ For a release that includes a migration:
 - Keep PostgreSQL on the internal Docker network; its Compose host binding is loopback-only.
 - Coordinate TLS termination, certificates, DNS, firewall ownership, and remote/VPN access with the company administrator.
 
-Any visitor on the authorised LAN may browse public component information without login or session. Authentication remains required for every write and protected read; Admin authorization is required for administrative operations. These functional requirements remain unchanged but authentication is not implemented in the database migration milestone. LAN-only reachability does not replace future backend authentication and authorization.
+Any visitor on the authorised LAN may browse public component information and statistics without login or session. Login and protected actions use a PostgreSQL-backed session; all state-changing routes require a CSRF token and Admin-only APIs enforce the role on the backend. LAN-only reachability does not replace backend authentication and authorization.
 
 ## Persistent data, photos, and backup
 

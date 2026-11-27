@@ -31,3 +31,12 @@ export function createGetComponentController(
     response.status(200).json({ component });
   };
 }
+
+export function createPublicStatisticsController(
+  componentReader: ComponentReader,
+): RequestHandler {
+  return async (_request, response) => {
+    const statistics = await componentReader.getPublicStatistics();
+    response.status(200).json({ statistics });
+  };
+}
