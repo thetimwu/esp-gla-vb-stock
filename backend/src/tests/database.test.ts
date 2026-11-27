@@ -84,6 +84,7 @@ describe("PostgreSQL-backed public API", () => {
       expect.objectContaining({
         id: fixtureIds[fixtureIds.length - 1],
         displayName: expect.stringMatching(/^Database test component/),
+        description: "Test fixture",
         currentQuantity: 4,
         minimumStockLevel: 2,
         photoUrl: null,

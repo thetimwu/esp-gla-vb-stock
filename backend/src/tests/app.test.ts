@@ -13,6 +13,7 @@ const logger: Logger = createLogger("silent");
 const component: PublicComponent = {
   id: "8a03ff64-6c8a-4b79-92e1-7104747064fd",
   displayName: "Example component",
+  description: "A non-sensitive component description",
   currentQuantity: 4,
   minimumStockLevel: 2,
   photoUrl: null,

@@ -4,6 +4,7 @@ import { Component } from "../entities/Component.js";
 export interface PublicComponent {
   id: string;
   displayName: string;
+  description: string;
   currentQuantity: number;
   minimumStockLevel: number;
   photoUrl: string | null;
@@ -16,13 +17,19 @@ export interface ComponentReader {
 
 type PublicComponentRecord = Pick<
   Component,
-  "id" | "name" | "currentQuantity" | "minimumStockLevel" | "photoPath"
+  | "id"
+  | "name"
+  | "description"
+  | "currentQuantity"
+  | "minimumStockLevel"
+  | "photoPath"
 >;
 
 function toPublicComponent(component: PublicComponentRecord): PublicComponent {
   return {
     id: component.id,
     displayName: component.name,
+    description: component.description,
     currentQuantity: component.currentQuantity,
     minimumStockLevel: component.minimumStockLevel,
     photoUrl: component.photoPath,
@@ -35,6 +42,7 @@ export const componentReader: ComponentReader = {
       select: {
         id: true,
         name: true,
+        description: true,
         currentQuantity: true,
         minimumStockLevel: true,
         photoPath: true,
@@ -50,6 +58,7 @@ export const componentReader: ComponentReader = {
       select: {
         id: true,
         name: true,
+        description: true,
         currentQuantity: true,
         minimumStockLevel: true,
         photoPath: true,
