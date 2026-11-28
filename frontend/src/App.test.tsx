@@ -60,10 +60,15 @@ interface AuthMockOptions {
   loginUser?: AuthUser;
   loginStatus?: number;
   loginMessage?: string;
+  stockStatus?: number | null;
+  stockMessage?: string;
+  stockDelayMs?: number;
 }
 
 interface AuthMockState {
   sessionUser: AuthUser | null;
+  stockStatus: number | null;
+  csrfToken: string;
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -89,26 +94,29 @@ function respondWithDashboard(
 ): AuthMockState {
   const authState: AuthMockState = {
     sessionUser: authOptions.initialUser ?? null,
+    stockStatus: authOptions.stockStatus ?? null,
+    csrfToken: "csrf-token-before-login",
   };
+  let inventoryState = inventory.map((component) => ({ ...component }));
+  let statisticsState = { ...totals };
   const loginUser = authOptions.loginUser ?? engineerUser;
   const loginStatus = authOptions.loginStatus ?? 200;
   const loginMessage =
     authOptions.loginMessage ?? "Invalid username or password";
-  const csrfToken = "csrf-token-before-login";
 
-  fetchMock.mockImplementation(async (input) => {
+  fetchMock.mockImplementation(async (input, options) => {
     const url = String(input);
     if (url.endsWith("/components")) {
-      return jsonResponse({ components: inventory });
+      return jsonResponse({ components: inventoryState });
     }
     if (url.endsWith("/statistics")) {
-      return jsonResponse({ statistics: totals });
+      return jsonResponse({ statistics: statisticsState });
     }
     if (url.endsWith("/auth/session")) {
       return jsonResponse({ user: authState.sessionUser });
     }
     if (url.endsWith("/auth/csrf-token")) {
-      return jsonResponse({ csrfToken });
+      return jsonResponse({ csrfToken: authState.csrfToken });
     }
     if (url.endsWith("/auth/login")) {
       if (loginStatus < 200 || loginStatus >= 300) {
@@ -126,9 +134,10 @@ function respondWithDashboard(
         );
       }
       authState.sessionUser = loginUser;
+      authState.csrfToken = "csrf-token-after-login";
       return jsonResponse({
         user: loginUser,
-        csrfToken: "csrf-token-after-login",
+        csrfToken: authState.csrfToken,
       });
     }
     if (url.endsWith("/auth/logout")) {
@@ -146,8 +155,117 @@ function respondWithDashboard(
       authState.sessionUser = null;
       return emptyResponse();
     }
+    if (url.endsWith("/stock-transactions")) {
+      if (authOptions.stockDelayMs) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, authOptions.stockDelayMs),
+        );
+      }
+      if (authState.stockStatus !== null) {
+        if (authState.stockStatus === 401) {
+          authState.sessionUser = null;
+        }
+        if (authState.stockStatus === 403) {
+          authState.csrfToken = "csrf-token-refreshed";
+        }
+        return jsonResponse(
+          {
+            error: {
+              code:
+                authState.stockStatus === 401
+                  ? "AUTHENTICATION_REQUIRED"
+                  : authState.stockStatus === 403
+                    ? "CSRF_TOKEN_INVALID"
+                    : authState.stockStatus === 409
+                      ? "INSUFFICIENT_STOCK"
+                      : "INTERNAL_SERVER_ERROR",
+              message:
+                authOptions.stockMessage ??
+                "The stock operation could not be completed.",
+            },
+          },
+          authState.stockStatus,
+        );
+      }
+
+      const componentId = url.split("/").at(-2);
+      const component = inventoryState.find(
+        (component) => component.id === componentId,
+      );
+      if (!component || !componentId) {
+        return jsonResponse(
+          {
+            error: {
+              code: "COMPONENT_NOT_FOUND",
+              message: "Component not found",
+            },
+          },
+          404,
+        );
+      }
+      const body = JSON.parse(String(options?.body)) as {
+        type: "STOCK_IN" | "STOCK_OUT" | "ADJUSTMENT";
+        quantity?: number;
+        newQuantity?: number;
+        comment?: string;
+      };
+      const previousQuantity = component.currentQuantity;
+      if (
+        body.type === "STOCK_OUT" &&
+        (body.quantity ?? 0) > previousQuantity
+      ) {
+        return jsonResponse(
+          {
+            error: {
+              code: "INSUFFICIENT_STOCK",
+              message: "The requested stock-out exceeds available stock.",
+            },
+          },
+          409,
+        );
+      }
+      const newQuantity =
+        body.type === "STOCK_IN"
+          ? previousQuantity + (body.quantity ?? 0)
+          : body.type === "STOCK_OUT"
+            ? previousQuantity - (body.quantity ?? 0)
+            : (body.newQuantity ?? previousQuantity);
+      inventoryState = inventoryState.map((item) =>
+        item.id === componentId
+          ? { ...item, currentQuantity: newQuantity }
+          : item,
+      );
+      statisticsState = {
+        activeComponentCount: inventoryState.length,
+        totalStockQuantity: inventoryState.reduce(
+          (total, item) => total + item.currentQuantity,
+          0,
+        ),
+        lowStockComponentCount: inventoryState.filter(
+          (item) => item.currentQuantity < item.minimumStockLevel,
+        ).length,
+      };
+      return jsonResponse(
+        {
+          transaction: {
+            id: "stock-transaction-1",
+            componentId,
+            componentName: component.displayName,
+            userId: authState.sessionUser?.id ?? engineerUser.id,
+            username: authState.sessionUser?.username ?? engineerUser.username,
+            actionType: body.type,
+            previousQuantity,
+            newQuantity,
+            quantityChange: newQuantity - previousQuantity,
+            comment: body.comment ?? null,
+            createdAt: new Date().toISOString(),
+          },
+        },
+        201,
+      );
+    }
     const id = url.split("/").at(-1);
-    const component = inventory.find((item) => item.id === id);
+    const component = inventoryState.find((item) => item.id === id);
     return component
       ? jsonResponse({ component })
       : jsonResponse(
@@ -500,6 +618,341 @@ describe("public stock dashboard", () => {
     expect(JSON.parse(String(loginCall?.[1]?.body))).toEqual({
       username: engineerUser.username,
       password: "correct horse",
+    });
+  });
+
+  describe("stock operations interface", () => {
+    it("offers a sign-in prompt to public visitors without showing stock controls", async () => {
+      respondWithDashboard();
+      render(<App />);
+      const user = userEvent.setup();
+
+      await user.click(
+        await screen.findByRole("button", {
+          name: "View details for Hinge clamp",
+        }),
+      );
+
+      expect(
+        await screen.findByText("Protected staff action"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Sign in to continue" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("group", { name: "Stock operation type" }),
+      ).toBeNull();
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).endsWith("/stock-transactions"),
+        ),
+      ).toBe(false);
+
+      await user.click(
+        screen.getByRole("button", { name: "Sign in to continue" }),
+      );
+      await submitLogin(engineerUser.username);
+      expect(
+        await screen.findByRole("heading", { name: "Stock operations" }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Hinge clamp")).toBeInTheDocument();
+    });
+
+    it.each([
+      ["Engineer", engineerUser],
+      ["Admin", adminUser],
+    ] as const)(
+      "shows stock controls to an authenticated %s",
+      async (_role, account) => {
+        respondWithDashboard(components, statistics, { initialUser: account });
+        render(<App />);
+        const user = userEvent.setup();
+
+        await user.click(
+          await screen.findByRole("button", {
+            name: "View details for Hinge clamp",
+          }),
+        );
+
+        expect(
+          await screen.findByRole("heading", { name: "Stock operations" }),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByRole("button", { name: "Stock In" }),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByRole("button", { name: "Stock Out" }),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByRole("button", { name: "Stock Adjustment" }),
+        ).toBeInTheDocument();
+      },
+    );
+
+    it.each([
+      {
+        label: "Stock In",
+        quantityLabel: "Quantity to add",
+        quantity: "5",
+        expectedBody: { type: "STOCK_IN", quantity: 5, comment: "Delivery" },
+        expectedQuantity: "17",
+        expectedTotal: "19",
+      },
+      {
+        label: "Stock Out",
+        quantityLabel: "Quantity to remove",
+        quantity: "3",
+        expectedBody: { type: "STOCK_OUT", quantity: 3, comment: "Repair" },
+        expectedQuantity: "9",
+        expectedTotal: "11",
+      },
+      {
+        label: "Stock Adjustment",
+        quantityLabel: "Corrected absolute quantity",
+        quantity: "8",
+        expectedBody: {
+          type: "ADJUSTMENT",
+          newQuantity: 8,
+          comment: "Physical count",
+        },
+        expectedQuantity: "8",
+        expectedTotal: "10",
+      },
+    ])(
+      "submits $label and refreshes the component and statistics",
+      async ({
+        label,
+        quantityLabel,
+        quantity,
+        expectedBody,
+        expectedQuantity,
+        expectedTotal,
+      }) => {
+        respondWithDashboard(components, statistics, {
+          initialUser: engineerUser,
+        });
+        render(<App />);
+        const user = userEvent.setup();
+
+        await user.click(
+          await screen.findByRole("button", {
+            name: "View details for Hinge clamp",
+          }),
+        );
+        await screen.findByRole("heading", { name: "Stock operations" });
+        if (label !== "Stock In") {
+          await user.click(screen.getByRole("button", { name: label }));
+        }
+
+        await user.type(screen.getByLabelText(quantityLabel), quantity);
+        await user.type(
+          screen.getByLabelText(
+            label === "Stock Adjustment"
+              ? "Explanation (optional)"
+              : "Comment (optional)",
+          ),
+          label === "Stock Adjustment"
+            ? "Physical count"
+            : label === "Stock In"
+              ? "Delivery"
+              : "Repair",
+        );
+        await user.click(
+          screen.getByRole("button", {
+            name: `Review ${label.toLowerCase()}`,
+          }),
+        );
+        await user.click(
+          screen.getByRole("button", {
+            name: `Confirm ${label.toLowerCase()}`,
+          }),
+        );
+
+        expect(
+          await screen.findByText(
+            new RegExp(
+              `${label} recorded\\. Current quantity is ${expectedQuantity}\\.`,
+            ),
+          ),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByText(expectedQuantity, { selector: ".detail-facts dd" }),
+        ).toBeInTheDocument();
+        const totalMetric = screen
+          .getByRole("heading", { name: "Total quantity" })
+          .closest("article");
+        expect(totalMetric).toHaveTextContent(expectedTotal);
+
+        const stockCall = fetchMock.mock.calls.find(([url]) =>
+          String(url).endsWith("/stock-transactions"),
+        );
+        expect(stockCall?.[1]?.method).toBe("POST");
+        expect(stockCall?.[1]?.credentials).toBe("include");
+        expect(stockCall?.[1]?.headers).toMatchObject({
+          "x-csrf-token": "csrf-token-before-login",
+        });
+        expect(JSON.parse(String(stockCall?.[1]?.body))).toEqual(expectedBody);
+      },
+    );
+
+    it("rejects decimals and stock-outs above the available quantity before posting", async () => {
+      respondWithDashboard(components, statistics, {
+        initialUser: engineerUser,
+      });
+      render(<App />);
+      const user = userEvent.setup();
+
+      await user.click(
+        await screen.findByRole("button", {
+          name: "View details for Hinge clamp",
+        }),
+      );
+      await screen.findByRole("heading", { name: "Stock operations" });
+      await user.type(screen.getByLabelText("Quantity to add"), "1.5");
+      await user.click(screen.getByRole("button", { name: "Review stock in" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Enter a whole number.",
+      );
+      expect(
+        screen.queryByRole("button", { name: "Confirm stock in" }),
+      ).toBeNull();
+
+      await user.click(screen.getByRole("button", { name: "Stock Out" }));
+      const quantityInput = screen.getByLabelText("Quantity to remove");
+      await user.clear(quantityInput);
+      await user.type(quantityInput, "13");
+      await user.click(
+        screen.getByRole("button", { name: "Review stock out" }),
+      );
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Only 12 units are available.",
+      );
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).endsWith("/stock-transactions"),
+        ),
+      ).toBe(false);
+    });
+
+    it("prevents duplicate submissions while the stock request is pending", async () => {
+      respondWithDashboard(components, statistics, {
+        initialUser: engineerUser,
+        stockDelayMs: 100,
+      });
+      render(<App />);
+      const user = userEvent.setup();
+
+      await user.click(
+        await screen.findByRole("button", {
+          name: "View details for Hinge clamp",
+        }),
+      );
+      await screen.findByRole("heading", { name: "Stock operations" });
+      await user.type(screen.getByLabelText("Quantity to add"), "2");
+      await user.click(screen.getByRole("button", { name: "Review stock in" }));
+      const confirmButton = screen.getByRole("button", {
+        name: "Confirm stock in",
+      });
+      await user.click(confirmButton);
+
+      expect(
+        screen.getByRole("button", { name: "Saving operation…" }),
+      ).toBeDisabled();
+      await user.click(
+        screen.getByRole("button", { name: "Saving operation…" }),
+      );
+      await screen.findByText(/Stock In recorded/);
+      expect(
+        fetchMock.mock.calls.filter(([url]) =>
+          String(url).endsWith("/stock-transactions"),
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("shows API failures and prompts again when the session has expired", async () => {
+      const authState = respondWithDashboard(components, statistics, {
+        initialUser: engineerUser,
+        stockStatus: 409,
+        stockMessage: "Insufficient stock for this operation.",
+      });
+      render(<App />);
+      const user = userEvent.setup();
+
+      await user.click(
+        await screen.findByRole("button", {
+          name: "View details for Hinge clamp",
+        }),
+      );
+      await screen.findByRole("heading", { name: "Stock operations" });
+      await user.type(screen.getByLabelText("Quantity to add"), "2");
+      await user.click(screen.getByRole("button", { name: "Review stock in" }));
+      await user.click(
+        screen.getByRole("button", { name: "Confirm stock in" }),
+      );
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Insufficient stock for this operation.",
+      );
+
+      authState.stockStatus = 401;
+      await user.click(screen.getByRole("button", { name: "Review stock in" }));
+      await user.click(
+        screen.getByRole("button", { name: "Confirm stock in" }),
+      );
+      expect(
+        await screen.findByRole("heading", { name: "Sign in" }),
+      ).toBeInTheDocument();
+      expect(authState.sessionUser).toBeNull();
+      expect(screen.getByText("Hinge clamp")).toBeInTheDocument();
+    });
+
+    it("refreshes the CSRF token after a CSRF failure without replaying the operation", async () => {
+      const authState = respondWithDashboard(components, statistics, {
+        initialUser: engineerUser,
+        stockStatus: 403,
+        stockMessage: "CSRF token invalid",
+      });
+      render(<App />);
+      const user = userEvent.setup();
+
+      await user.click(
+        await screen.findByRole("button", {
+          name: "View details for Hinge clamp",
+        }),
+      );
+      await screen.findByRole("heading", { name: "Stock operations" });
+      await user.type(screen.getByLabelText("Quantity to add"), "2");
+      await user.click(screen.getByRole("button", { name: "Review stock in" }));
+      await user.click(
+        screen.getByRole("button", { name: "Confirm stock in" }),
+      );
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Your security token expired and was refreshed.",
+      );
+      expect(
+        fetchMock.mock.calls.filter(([url]) =>
+          String(url).endsWith("/stock-transactions"),
+        ),
+      ).toHaveLength(1);
+      expect(
+        fetchMock.mock.calls.filter(([url]) =>
+          String(url).endsWith("/auth/csrf-token"),
+        ),
+      ).toHaveLength(2);
+
+      authState.stockStatus = null;
+      await user.click(screen.getByRole("button", { name: "Review stock in" }));
+      await user.click(
+        screen.getByRole("button", { name: "Confirm stock in" }),
+      );
+      await screen.findByText(/Stock In recorded/);
+      const stockCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).endsWith("/stock-transactions"),
+      );
+      expect(stockCalls).toHaveLength(2);
+      expect(stockCalls[1]?.[1]?.headers).toMatchObject({
+        "x-csrf-token": "csrf-token-refreshed",
+      });
     });
   });
 

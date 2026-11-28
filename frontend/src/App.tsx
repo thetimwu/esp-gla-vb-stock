@@ -13,6 +13,7 @@ import {
   type AuthUser,
 } from "./api/authApi";
 import LoginPage from "./auth/LoginPage";
+import StockOperationPanel from "./stock/StockOperationPanel";
 import "./App.css";
 
 type DashboardState =
@@ -225,10 +226,23 @@ function ComponentDetails({
   componentId,
   onBack,
   cache,
+  authentication,
+  onRefresh,
+  onRequestLogin,
+  onSessionExpired,
+  onCsrfFailure,
 }: {
   componentId: string;
   onBack: () => void;
   cache: { current: Map<string, PublicComponent> };
+  authentication: AuthenticationState;
+  onRefresh: (componentId: string) => Promise<{
+    component: PublicComponent | null;
+    dashboardRefreshed: boolean;
+  }>;
+  onRequestLogin: () => void;
+  onSessionExpired: () => void;
+  onCsrfFailure: () => Promise<boolean>;
 }) {
   const [retryCount, setRetryCount] = useState(0);
   const [result, setResult] = useState<DetailResult | null>(null);
@@ -295,35 +309,62 @@ function ComponentDetails({
       )}
 
       {state.status === "ready" && (
-        <article className="detail-card">
-          <ComponentPhoto component={state.component} size="detail" />
-          <div className="detail-card__body">
-            <div className="detail-card__heading">
-              <div>
-                <p className="eyebrow">Component details</p>
-                <h1 id="detail-heading">{state.component.displayName}</h1>
+        <>
+          <article className="detail-card">
+            <ComponentPhoto component={state.component} size="detail" />
+            <div className="detail-card__body">
+              <div className="detail-card__heading">
+                <div>
+                  <p className="eyebrow">Component details</p>
+                  <h1 id="detail-heading">{state.component.displayName}</h1>
+                </div>
+                <StatusBadge status={getInventoryStatus(state.component)} />
               </div>
-              <StatusBadge status={getInventoryStatus(state.component)} />
+              <p className="detail-card__description">
+                {state.component.description || "No description provided."}
+              </p>
+              <dl className="detail-facts">
+                <div>
+                  <dt>Part number</dt>
+                  <dd>{state.component.partNumber || "Not listed"}</dd>
+                </div>
+                <div>
+                  <dt>Current stock</dt>
+                  <dd>{formatQuantity(state.component.currentQuantity)}</dd>
+                </div>
+                <div>
+                  <dt>Minimum stock</dt>
+                  <dd>{formatQuantity(state.component.minimumStockLevel)}</dd>
+                </div>
+              </dl>
             </div>
-            <p className="detail-card__description">
-              {state.component.description || "No description provided."}
-            </p>
-            <dl className="detail-facts">
+          </article>
+
+          {authentication.status === "authenticated" && (
+            <StockOperationPanel
+              component={state.component}
+              csrfToken={authentication.csrfToken}
+              onRefresh={onRefresh}
+              onSessionExpired={onSessionExpired}
+              onCsrfFailure={onCsrfFailure}
+            />
+          )}
+          {authentication.status === "anonymous" && (
+            <aside className="stock-login-prompt">
               <div>
-                <dt>Part number</dt>
-                <dd>{state.component.partNumber || "Not listed"}</dd>
+                <p className="eyebrow">Protected staff action</p>
+                <p>Sign in to record an inventory stock operation.</p>
               </div>
-              <div>
-                <dt>Current stock</dt>
-                <dd>{formatQuantity(state.component.currentQuantity)}</dd>
-              </div>
-              <div>
-                <dt>Minimum stock</dt>
-                <dd>{formatQuantity(state.component.minimumStockLevel)}</dd>
-              </div>
-            </dl>
-          </div>
-        </article>
+              <button
+                className="button button--primary"
+                type="button"
+                onClick={onRequestLogin}
+              >
+                Sign in to continue
+              </button>
+            </aside>
+          )}
+        </>
       )}
     </section>
   );
@@ -436,6 +477,73 @@ function App() {
     setAuthenticationNotice(null);
     window.location.hash = "#top";
     setIsLoginRoute(false);
+  }
+
+  function requestStockSignIn() {
+    setAuthenticationNotice(
+      "Sign in to record this stock operation. You will return to the selected component.",
+    );
+    window.location.hash = "#login";
+    setIsLoginRoute(true);
+  }
+
+  function handleStockSessionExpired() {
+    setAuthentication({ status: "anonymous" });
+    setAuthenticationNotice(
+      "Your session expired. Sign in again to continue; you will return to the selected component.",
+    );
+    window.location.hash = "#login";
+    setIsLoginRoute(true);
+  }
+
+  async function refreshCsrfTokenAfterFailure(): Promise<boolean> {
+    try {
+      const csrfToken = await fetchCsrfToken();
+      setAuthentication((current) =>
+        current.status === "authenticated"
+          ? { ...current, csrfToken }
+          : current,
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof AuthenticationApiError && error.status === 401) {
+        handleStockSessionExpired();
+      }
+      return false;
+    }
+  }
+
+  async function refreshInventoryAfterStockOperation(componentId: string) {
+    const [dashboardRefresh, componentRefresh] = await Promise.allSettled([
+      fetchDashboard(),
+      fetchComponent(componentId),
+    ]);
+
+    let refreshedComponent: PublicComponent | null = null;
+    if (dashboardRefresh.status === "fulfilled") {
+      const data = dashboardRefresh.value;
+      for (const component of data.components) {
+        detailsCache.current.set(component.id, component);
+      }
+      refreshedComponent =
+        data.components.find((component) => component.id === componentId) ??
+        null;
+      setDashboardResult({
+        requestId: retryCount,
+        state: { status: "ready", data },
+      });
+    }
+    if (componentRefresh.status === "fulfilled") {
+      refreshedComponent = componentRefresh.value;
+      detailsCache.current.set(componentId, componentRefresh.value);
+    } else if (refreshedComponent) {
+      detailsCache.current.set(componentId, refreshedComponent);
+    }
+
+    return {
+      component: refreshedComponent,
+      dashboardRefreshed: dashboardRefresh.status === "fulfilled",
+    };
   }
 
   async function handleLogout() {
@@ -730,6 +838,11 @@ function App() {
                   componentId={selectedComponentId}
                   onBack={() => setSelectedComponentId(null)}
                   cache={detailsCache}
+                  authentication={authentication}
+                  onRefresh={refreshInventoryAfterStockOperation}
+                  onRequestLogin={requestStockSignIn}
+                  onSessionExpired={handleStockSessionExpired}
+                  onCsrfFailure={refreshCsrfTokenAfterFailure}
                 />
               ) : (
                 <>
