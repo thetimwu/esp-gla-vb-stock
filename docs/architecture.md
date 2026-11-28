@@ -2,25 +2,25 @@
 
 ## Agreed technology
 
-- **Frontend:** React, TypeScript, and Vite. The public read-only dashboard is implemented in Milestone 3A.
+- **Frontend:** React, TypeScript, and Vite. The public read-only dashboard is implemented in Milestone 3A; login and session navigation are implemented in Milestone 3B.
 - **Backend:** Node.js, Express.js, and TypeScript.
 - **Database:** PostgreSQL 17 with TypeORM and explicit migrations.
 - **Deployment:** Docker and Docker Compose.
 - **Initial host:** Windows PC on the internal company LAN, using Docker Desktop.
 - **Future target:** Ubuntu Server.
 
-The backend includes public inventory reads, session-based authentication, access control, component/user administration, and protected history reads. The React frontend provides the public read-only dashboard; stock mutation workflows remain unimplemented.
+The backend includes public inventory reads, session-based authentication, access control, component/user administration, and protected history reads. The React frontend provides the public read-only dashboard and sign-in/session navigation; stock mutation workflows and administration screens remain unimplemented.
 
 ## System boundaries
 
 ```text
 Browser on authorised company LAN
         |
-        | public read-only dashboard; no login/session
+        | public inventory GETs; authentication endpoints use the server session
         v
 React + TypeScript + Vite frontend
         |
-        | public GETs via same-origin /api proxy
+        | same-origin /api proxy; public reads omit cookies, auth calls include them
         v
 Express + TypeScript backend
         |
@@ -42,11 +42,11 @@ The dashboard is available to every visitor on the authorised company LAN withou
 | Create/edit/deactivate/reactivate users and assign roles             |                   Deny |     Deny | Allow |
 | Audit logs and application inventory settings                        |                   Deny |     Deny | Allow |
 
-Every protected request checks authentication and active-account state on the backend. ADMIN-only endpoints additionally check the role in backend middleware/service authorization. A frontend login redirect preserves the intended protected URL/action, then resumes it after successful login if still valid. No dashboard route or public GET redirects to login.
+Every protected request checks authentication and active-account state on the backend. ADMIN-only endpoints additionally check the role in backend middleware/service authorization. The current frontend opens login only when a visitor chooses Login; no stock or administration actions are implemented yet. When a future protected action is added, its intended destination should be preserved through sign-in where still valid. No dashboard route or public GET redirects to login.
 
 The public component response is an explicit allowlist: component ID, display name, description, part number, current quantity, minimum stock level, and photo URL/reference. It excludes flexible/private attributes, user data, transaction and audit records, sessions, credentials, and security configuration. `/api/statistics` returns public aggregate counts from active components only. A component is low-stock when current quantity is strictly less than its minimum.
 
-The frontend uses `VITE_API_BASE_URL` for public browser requests (default `/api`) and the Vite server proxies that path to `API_PROXY_TARGET`. The proxy target is server-side configuration and is not exposed to browser code. Public requests omit credentials; no dashboard read initializes or sends an authenticated session. The frontend does not contain stock-update, transaction, user-management, or administration controls.
+The frontend uses `VITE_API_BASE_URL` (default `/api`) and the Vite server proxies that path to `API_PROXY_TARGET`. The proxy target is server-side configuration and is not exposed to browser code. Public inventory requests use `credentials: omit`; authentication endpoints use `credentials: include`. On startup, the frontend checks `GET /api/auth/session` to restore a signed-in account; the backend's `saveUninitialized: false` session configuration avoids creating an anonymous session. A CSRF token is requested when the visitor opens the login page, and after session restoration for an authenticated account. The frontend keeps the CSRF token and account state in memory only; it does not persist passwords, session IDs, or tokens in browser storage. The role-aware header shows an Administration item to ADMIN users only, but administration screens and controls are not implemented. Stock-update, transaction, and user-management screens remain out of scope.
 
 Authentication uses an HttpOnly, SameSite=Strict session cookie backed by the PostgreSQL `sessions` table. Session IDs rotate on login; each protected request reloads the account and checks that it remains active and has the required role. Login and authenticated state-changing requests require a synchronizer CSRF token. Login attempts are rate-limited per client IP. No session middleware is applied to public dashboard endpoints.
 
@@ -147,6 +147,16 @@ This design prevents concurrent requests from silently overwriting one another a
 - Provide summary cards, public component cards/details, name/part-number search, stock-status filtering, quantity/name sorting, loading/error/retry, and empty-inventory states.
 - Keep API URL configuration in frontend environment variables. Use a same-origin `/api` Vite proxy for development; do not put credentials in frontend configuration.
 - Do not add login, stock mutation, transaction, user-management, or administration functionality in this milestone.
+
+### Milestone 3B: frontend login and session navigation
+
+- Add a responsive login page that is entered only when a visitor chooses Login; public dashboard navigation and component details remain available without signing in.
+- Use the existing `GET /api/auth/session`, `GET /api/auth/csrf-token`, `POST /api/auth/login`, and `POST /api/auth/logout` endpoints and their existing response formats.
+- Restore the current server-managed session on application load. Use `credentials: include` for auth requests and retain public inventory requests as credential-free reads.
+- Send the CSRF token in `x-csrf-token` for login and logout. Keep the token and authentication state in memory; do not persist passwords, session IDs, or tokens in browser storage.
+- Show account identity and role-aware navigation. Only ADMIN users see the Administration navigation item; it is a placeholder until management screens are implemented, and backend authorization remains authoritative.
+- Handle invalid credentials, CSRF failures, expired sessions, and logout without redirecting anonymous dashboard visitors to login.
+- Do not add public registration, stock operations, user-management screens, or administration screens.
 
 ### Milestone 3: stock operations
 

@@ -77,6 +77,7 @@ Every transaction must be attributable to the authenticated user and use a serve
 - Keep secrets out of Git. Provide an `.env.example` containing placeholders only; real `.env` files and credentials must remain untracked and protected.
 - Validate all client input on the server and avoid returning internal errors, credentials, or database details to clients.
 - Keep stock transactions and administrative audit history protected against unauthorised modification or deletion.
+- Restore a signed-in account from the existing session endpoint without redirecting public visitors. Use the existing CSRF mechanism for login and logout; keep passwords, session IDs, and CSRF tokens out of persistent browser storage.
 
 ## Acceptance criteria
 
@@ -91,6 +92,7 @@ Every transaction must be attributable to the authenticated user and use a serve
 9. Invalid input, insufficient stock, and concurrent conflicting changes cannot produce negative stock or an unrecorded quantity change.
 10. Users and components needed by history can be deactivated or archived without erasing their historical references.
 11. The service uses PostgreSQL transactions and is accessible only through the intended LAN deployment.
+12. The frontend offers login only by explicit user choice, restores an existing session, shows account/role navigation, and preserves public dashboard access for anonymous visitors.
 
 ### Authorization and regression test matrix
 

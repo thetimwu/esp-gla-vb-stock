@@ -1,3 +1,5 @@
+import { apiBaseUrl } from "./config";
+
 export interface PublicComponent {
   id: string;
   displayName: string;
@@ -25,10 +27,6 @@ export class InventoryApiError extends Error {
     this.name = "InventoryApiError";
   }
 }
-
-const apiBaseUrl = (
-  import.meta.env.VITE_API_BASE_URL?.trim() || "/api"
-).replace(/\/+$/, "");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

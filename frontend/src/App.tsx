@@ -5,6 +5,14 @@ import {
   type DashboardData,
   type PublicComponent,
 } from "./api/inventoryApi";
+import {
+  AuthenticationApiError,
+  fetchCsrfToken,
+  fetchCurrentSession,
+  logout,
+  type AuthUser,
+} from "./api/authApi";
+import LoginPage from "./auth/LoginPage";
 import "./App.css";
 
 type DashboardState =
@@ -27,6 +35,12 @@ type DetailResult = {
   requestId: number;
   state: Exclude<DetailState, { status: "loading" }>;
 };
+
+type AuthenticationState =
+  | { status: "checking" }
+  | { status: "anonymous" }
+  | { status: "error"; message: string }
+  | { status: "authenticated"; user: AuthUser; csrfToken: string };
 
 type InventoryStatus = "in-stock" | "low-stock" | "out-of-stock";
 type StatusFilter = "all" | InventoryStatus;
@@ -56,6 +70,12 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error
     ? error.message
     : "Unable to load inventory data. Please try again.";
+}
+
+function getAuthenticationErrorMessage(error: unknown): string {
+  return error instanceof Error
+    ? error.message
+    : "Unable to complete the authentication request. Please try again.";
 }
 
 function formatQuantity(quantity: number): string {
@@ -320,7 +340,74 @@ function App() {
     null,
   );
   const detailsCache = useRef(new Map<string, PublicComponent>());
-  const [showLoginNotice, setShowLoginNotice] = useState(false);
+  const [authentication, setAuthentication] = useState<AuthenticationState>({
+    status: "checking",
+  });
+  const [isLoginRoute, setIsLoginRoute] = useState(
+    () => window.location.hash === "#login",
+  );
+  const [authenticationNotice, setAuthenticationNotice] = useState<
+    string | null
+  >(null);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const hasAuthenticatedInThisMount = useRef(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function restoreSession() {
+      try {
+        const user = await fetchCurrentSession(controller.signal);
+        if (controller.signal.aborted || hasAuthenticatedInThisMount.current) {
+          return;
+        }
+        if (!user) {
+          setAuthentication({ status: "anonymous" });
+          return;
+        }
+
+        const csrfToken = await fetchCsrfToken(controller.signal);
+        if (
+          !controller.signal.aborted &&
+          !hasAuthenticatedInThisMount.current
+        ) {
+          setAuthentication({ status: "authenticated", user, csrfToken });
+        }
+      } catch (error) {
+        if (
+          !controller.signal.aborted &&
+          !hasAuthenticatedInThisMount.current
+        ) {
+          setAuthentication({
+            status: "error",
+            message: getAuthenticationErrorMessage(error),
+          });
+        }
+      }
+    }
+
+    void restoreSession();
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    function updateRouteFromHash() {
+      setIsLoginRoute(window.location.hash === "#login");
+    }
+
+    window.addEventListener("hashchange", updateRouteFromHash);
+    return () => window.removeEventListener("hashchange", updateRouteFromHash);
+  }, []);
+
+  useEffect(() => {
+    if (authentication.status === "authenticated" && isLoginRoute) {
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.search}#top`,
+      );
+    }
+  }, [authentication, isLoginRoute]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -342,6 +429,66 @@ function App() {
 
     return () => controller.abort();
   }, [retryCount]);
+
+  function handleAuthenticated(user: AuthUser, csrfToken: string) {
+    hasAuthenticatedInThisMount.current = true;
+    setAuthentication({ status: "authenticated", user, csrfToken });
+    setAuthenticationNotice(null);
+    window.location.hash = "#top";
+    setIsLoginRoute(false);
+  }
+
+  async function handleLogout() {
+    if (authentication.status !== "authenticated" || loggingOut) {
+      return;
+    }
+
+    setLoggingOut(true);
+    setAuthenticationNotice(null);
+    try {
+      await logout(authentication.csrfToken);
+      setAuthentication({ status: "anonymous" });
+      setAuthenticationNotice("You have been signed out.");
+      window.location.hash = "#top";
+      setIsLoginRoute(false);
+    } catch (error) {
+      if (
+        error instanceof AuthenticationApiError &&
+        (error.status === 401 || error.status === 403)
+      ) {
+        try {
+          const currentUser = await fetchCurrentSession();
+          if (!currentUser) {
+            setAuthentication({ status: "anonymous" });
+            setAuthenticationNotice(
+              "Your session expired. You have been signed out.",
+            );
+            window.location.hash = "#top";
+            setIsLoginRoute(false);
+            return;
+          }
+
+          const csrfToken = await fetchCsrfToken();
+          setAuthentication({
+            status: "authenticated",
+            user: currentUser,
+            csrfToken,
+          });
+          setAuthenticationNotice(
+            "Your security token expired. Please log out again.",
+          );
+        } catch {
+          setAuthenticationNotice(
+            "Your session could not be verified. Please try again.",
+          );
+        }
+      } else {
+        setAuthenticationNotice(getAuthenticationErrorMessage(error));
+      }
+    } finally {
+      setLoggingOut(false);
+    }
+  }
 
   const dashboard: DashboardState =
     dashboardResult?.requestId === retryCount
@@ -382,6 +529,7 @@ function App() {
   const zeroStockCount = components.filter(
     (component) => component.currentQuantity === 0,
   ).length;
+  const loginView = isLoginRoute && authentication.status !== "authenticated";
 
   return (
     <div className="app-shell">
@@ -402,44 +550,78 @@ function App() {
           </span>
         </a>
         <nav className="site-nav" aria-label="Main navigation">
-          <a
-            className="site-nav__link site-nav__link--active"
-            href="#inventory"
-          >
-            Inventory
+          <a className="site-nav__link site-nav__link--active" href="#top">
+            Dashboard
           </a>
           <span className="read-only-label">
             <span className="read-only-label__dot" aria-hidden="true" />
             Read-only dashboard
           </span>
-          <button
-            className="button button--login"
-            type="button"
-            onClick={() => setShowLoginNotice(true)}
-          >
-            Log in
-          </button>
+          {authentication.status === "checking" ? (
+            <span className="auth-checking" role="status">
+              Checking sign-in…
+            </span>
+          ) : authentication.status === "authenticated" ? (
+            <>
+              {authentication.user.role === "ADMIN" && (
+                <span
+                  className="site-nav__link site-nav__link--disabled"
+                  title="Administration screens are not available yet."
+                >
+                  Administration
+                </span>
+              )}
+              <span
+                className="account-summary"
+                aria-label={`Signed in as ${authentication.user.username}, ${
+                  authentication.user.role === "ADMIN"
+                    ? "Administrator"
+                    : "Engineer"
+                }`}
+              >
+                <span className="account-summary__username">
+                  {authentication.user.username}
+                </span>
+                <span className="account-summary__role">
+                  {authentication.user.role === "ADMIN" ? "Admin" : "Engineer"}
+                </span>
+              </span>
+              <button
+                className="button button--login"
+                type="button"
+                disabled={loggingOut}
+                onClick={() => void handleLogout()}
+              >
+                {loggingOut ? "Signing out…" : "Log out"}
+              </button>
+            </>
+          ) : (
+            <>
+              {authentication.status === "error" && (
+                <span
+                  className="auth-checking"
+                  title={authentication.message}
+                  role="status"
+                >
+                  Sign-in unavailable
+                </span>
+              )}
+              <a className="button button--login" href="#login">
+                Log in
+              </a>
+            </>
+          )}
         </nav>
       </header>
 
-      {showLoginNotice && (
-        <div className="login-notice" role="status">
-          <p>
-            Sign-in is not available in this milestone. Inventory browsing is
-            public.
-          </p>
-          <button
-            className="login-notice__close"
-            type="button"
-            aria-label="Dismiss sign-in message"
-            onClick={() => setShowLoginNotice(false)}
-          >
-            ×
-          </button>
-        </div>
+      {authenticationNotice && (
+        <p className="auth-notice" role="status">
+          {authenticationNotice}
+        </p>
       )}
 
-      <main id="top" className="dashboard-main">
+      {loginView && <LoginPage onAuthenticated={handleAuthenticated} />}
+      <main id="top" className="dashboard-main" hidden={loginView}>
         <section className="welcome-panel" aria-labelledby="page-title">
           <div className="welcome-panel__copy">
             <p className="eyebrow">Company inventory</p>

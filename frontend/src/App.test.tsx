@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import type { AuthUser } from "./api/authApi";
 import type { PublicComponent, PublicStatistics } from "./api/inventoryApi";
 
 const components: PublicComponent[] = [
@@ -42,6 +43,29 @@ const statistics: PublicStatistics = {
 
 const fetchMock = vi.fn<typeof fetch>();
 
+const engineerUser: AuthUser = {
+  id: "engineer-1",
+  username: "test-engineer",
+  role: "ENGINEER",
+};
+
+const adminUser: AuthUser = {
+  id: "admin-1",
+  username: "test-admin",
+  role: "ADMIN",
+};
+
+interface AuthMockOptions {
+  initialUser?: AuthUser | null;
+  loginUser?: AuthUser;
+  loginStatus?: number;
+  loginMessage?: string;
+}
+
+interface AuthMockState {
+  sessionUser: AuthUser | null;
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -50,10 +74,28 @@ function jsonResponse(body: unknown, status = 200): Response {
   } as Response;
 }
 
+function emptyResponse(status = 204): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => null,
+  } as Response;
+}
+
 function respondWithDashboard(
   inventory: PublicComponent[] = components,
   totals: PublicStatistics = statistics,
-) {
+  authOptions: AuthMockOptions = {},
+): AuthMockState {
+  const authState: AuthMockState = {
+    sessionUser: authOptions.initialUser ?? null,
+  };
+  const loginUser = authOptions.loginUser ?? engineerUser;
+  const loginStatus = authOptions.loginStatus ?? 200;
+  const loginMessage =
+    authOptions.loginMessage ?? "Invalid username or password";
+  const csrfToken = "csrf-token-before-login";
+
   fetchMock.mockImplementation(async (input) => {
     const url = String(input);
     if (url.endsWith("/components")) {
@@ -61,6 +103,48 @@ function respondWithDashboard(
     }
     if (url.endsWith("/statistics")) {
       return jsonResponse({ statistics: totals });
+    }
+    if (url.endsWith("/auth/session")) {
+      return jsonResponse({ user: authState.sessionUser });
+    }
+    if (url.endsWith("/auth/csrf-token")) {
+      return jsonResponse({ csrfToken });
+    }
+    if (url.endsWith("/auth/login")) {
+      if (loginStatus < 200 || loginStatus >= 300) {
+        return jsonResponse(
+          {
+            error: {
+              code:
+                loginStatus === 403
+                  ? "CSRF_TOKEN_INVALID"
+                  : "INVALID_CREDENTIALS",
+              message: loginMessage,
+            },
+          },
+          loginStatus,
+        );
+      }
+      authState.sessionUser = loginUser;
+      return jsonResponse({
+        user: loginUser,
+        csrfToken: "csrf-token-after-login",
+      });
+    }
+    if (url.endsWith("/auth/logout")) {
+      if (!authState.sessionUser) {
+        return jsonResponse(
+          {
+            error: {
+              code: "AUTHENTICATION_REQUIRED",
+              message: "Login required",
+            },
+          },
+          401,
+        );
+      }
+      authState.sessionUser = null;
+      return emptyResponse();
     }
     const id = url.split("/").at(-1);
     const component = inventory.find((item) => item.id === id);
@@ -76,9 +160,27 @@ function respondWithDashboard(
           404,
         );
   });
+  return authState;
+}
+
+async function openLoginPage() {
+  await userEvent.click(screen.getByRole("link", { name: "Log in" }));
+  expect(
+    await screen.findByRole("heading", { name: "Sign in" }),
+  ).toBeInTheDocument();
+  await screen.findByRole("button", { name: "Sign in" });
+}
+
+async function submitLogin(username = "test-user", password = "correct horse") {
+  await userEvent.type(screen.getByLabelText("Username"), username);
+  await userEvent.type(screen.getByLabelText("Password"), password);
+  const submitButton = screen.getByRole("button", { name: "Sign in" });
+  await vi.waitFor(() => expect(submitButton).toBeEnabled());
+  await userEvent.click(submitButton);
 }
 
 beforeEach(() => {
+  window.history.replaceState(null, "", window.location.pathname);
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -93,7 +195,9 @@ describe("public stock dashboard", () => {
     render(<App />);
 
     expect(await screen.findByText("Hinge clamp")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Log in" })).toBeInTheDocument();
+    const loginLink = await screen.findByRole("link", { name: "Log in" });
+    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
+    expect(screen.queryByText("Administration")).toBeNull();
 
     const componentMetric = screen
       .getByRole("heading", { name: "Component types" })
@@ -121,23 +225,51 @@ describe("public stock dashboard", () => {
     expect(
       screen.getByText("Out of Stock", { selector: ".status-badge" }),
     ).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const inventoryCalls = fetchMock.mock.calls.filter(([url]) => {
+      const requestUrl = String(url);
+      return (
+        requestUrl.endsWith("/components") || requestUrl.endsWith("/statistics")
+      );
+    });
+    expect(inventoryCalls).toHaveLength(2);
     expect(
-      fetchMock.mock.calls.map(([url]) => String(url)).join(" "),
-    ).not.toContain("/auth/");
+      inventoryCalls.every(([, options]) => options?.credentials === "omit"),
+    ).toBe(true);
     expect(
-      fetchMock.mock.calls.every(
-        ([, options]) => options?.credentials === "omit",
+      fetchMock.mock.calls.filter(([url]) =>
+        String(url).endsWith("/auth/session"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      fetchMock.mock.calls.find(([url]) =>
+        String(url).endsWith("/auth/session"),
+      )?.[1]?.credentials,
+    ).toBe("include");
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith("/auth/csrf-token"),
+      ),
+    ).toBe(false);
+
+    await userEvent.click(loginLink);
+    expect(
+      await screen.findByRole("heading", { name: "Sign in" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Stock overview" }),
+    ).toBeNull();
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).endsWith("/auth/csrf-token"),
       ),
     ).toBe(true);
 
-    await userEvent.click(screen.getByRole("button", { name: "Log in" }));
+    await userEvent.click(
+      screen.getByRole("link", { name: "Return to public dashboard" }),
+    );
     expect(
-      screen.getByRole("status", {
-        name: "",
-      }),
-    ).toHaveTextContent("Sign-in is not available in this milestone");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+      await screen.findByRole("heading", { name: "Stock overview" }),
+    ).toBeInTheDocument();
   });
 
   it("searches by part number and filters by stock status", async () => {
@@ -161,7 +293,15 @@ describe("public stock dashboard", () => {
 
     expect(screen.getByText("Latch bolt")).toBeInTheDocument();
     expect(screen.queryByText("Roller guide")).not.toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      fetchMock.mock.calls.filter(([url]) => {
+        const requestUrl = String(url);
+        return (
+          requestUrl.endsWith("/components") ||
+          requestUrl.endsWith("/statistics")
+        );
+      }),
+    ).toHaveLength(2);
   });
 
   it("sorts components by stock quantity", async () => {
@@ -327,6 +467,187 @@ describe("public stock dashboard", () => {
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
 
     expect(await screen.findByText("Hinge clamp")).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("logs an Engineer in with CSRF protection and shows Engineer account navigation", async () => {
+    respondWithDashboard(components, statistics, { loginUser: engineerUser });
+    render(<App />);
+
+    await screen.findByText("Hinge clamp");
+    await openLoginPage();
+    await submitLogin(engineerUser.username);
+
+    expect(await screen.findByText(engineerUser.username)).toBeInTheDocument();
+    expect(screen.getByText("Engineer")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
+    expect(screen.queryByText("Administration")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
+    expect(window.localStorage.length).toBe(0);
+
+    const csrfCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/auth/csrf-token"),
+    );
+    expect(csrfCall?.[1]?.credentials).toBe("include");
+
+    const loginCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/auth/login"),
+    );
+    expect(loginCall?.[1]?.credentials).toBe("include");
+    expect(loginCall?.[1]?.headers).toMatchObject({
+      "x-csrf-token": "csrf-token-before-login",
+    });
+    expect(JSON.parse(String(loginCall?.[1]?.body))).toEqual({
+      username: engineerUser.username,
+      password: "correct horse",
+    });
+  });
+
+  it("logs an Admin in and shows administration navigation only for Admins", async () => {
+    respondWithDashboard(components, statistics, { loginUser: adminUser });
+    render(<App />);
+
+    await screen.findByText("Hinge clamp");
+    await openLoginPage();
+    await submitLogin(adminUser.username);
+
+    expect(await screen.findByText(adminUser.username)).toBeInTheDocument();
+    expect(screen.getByText("Admin")).toBeInTheDocument();
+    expect(screen.getByText("Administration")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
+  });
+
+  it("shows a clear error for incorrect credentials without leaving the login page", async () => {
+    respondWithDashboard(components, statistics, {
+      loginStatus: 401,
+      loginMessage: "Invalid username or password",
+    });
+    render(<App />);
+
+    await screen.findByText("Hinge clamp");
+    await openLoginPage();
+    await submitLogin("unknown-user", "wrong-password");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Incorrect username or password.",
+    );
+    expect(
+      screen.getByRole("heading", { name: "Sign in" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Return to public dashboard" }),
+    ).toBeInTheDocument();
+  });
+
+  it("restores the authenticated session after the application is remounted", async () => {
+    const authState = respondWithDashboard(components, statistics, {
+      initialUser: engineerUser,
+    });
+    const firstRender = render(<App />);
+
+    expect(await screen.findByText(engineerUser.username)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
+    firstRender.unmount();
+
+    authState.sessionUser = engineerUser;
+    render(<App />);
+
+    expect(await screen.findByText(engineerUser.username)).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(([url]) =>
+        String(url).endsWith("/auth/session"),
+      ),
+    ).toHaveLength(2);
+    expect(
+      fetchMock.mock.calls.filter(([url]) =>
+        String(url).endsWith("/auth/csrf-token"),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("logs out and clears authenticated navigation", async () => {
+    const authState = respondWithDashboard(components, statistics);
+    render(<App />);
+
+    await screen.findByText("Hinge clamp");
+    await openLoginPage();
+    await submitLogin();
+    await screen.findByRole("button", { name: "Log out" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Log out" }));
+    expect(
+      await screen.findByRole("link", { name: "Log in" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Administration")).toBeNull();
+    expect(authState.sessionUser).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "You have been signed out.",
+    );
+
+    const logoutCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).endsWith("/auth/logout"),
+    );
+    expect(logoutCall?.[1]?.credentials).toBe("include");
+    expect(logoutCall?.[1]?.headers).toMatchObject({
+      "x-csrf-token": "csrf-token-after-login",
+    });
+  });
+
+  it("treats an expired session as signed out without redirecting the public dashboard", async () => {
+    const authState = respondWithDashboard(components, statistics, {
+      initialUser: engineerUser,
+    });
+    const signedInRender = render(<App />);
+
+    expect(await screen.findByText(engineerUser.username)).toBeInTheDocument();
+    signedInRender.unmount();
+    authState.sessionUser = null;
+    render(<App />);
+
+    expect(
+      await screen.findByRole("link", { name: "Log in" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Hinge clamp")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
+  });
+
+  it("clears local sign-in state when the session expires during logout", async () => {
+    const authState = respondWithDashboard(components, statistics);
+    render(<App />);
+
+    await screen.findByText("Hinge clamp");
+    await openLoginPage();
+    await submitLogin();
+    await screen.findByRole("button", { name: "Log out" });
+
+    authState.sessionUser = null;
+    await userEvent.click(screen.getByRole("button", { name: "Log out" }));
+
+    expect(
+      await screen.findByRole("link", { name: "Log in" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Your session expired. You have been signed out.",
+    );
+    expect(screen.getByText("Hinge clamp")).toBeInTheDocument();
+  });
+
+  it("reports a CSRF failure and stays on the sign-in form", async () => {
+    respondWithDashboard(components, statistics, {
+      loginStatus: 403,
+      loginMessage: "Missing or invalid CSRF token",
+    });
+    render(<App />);
+
+    await screen.findByText("Hinge clamp");
+    await openLoginPage();
+    await submitLogin();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Your sign-in request could not be verified. Please try again.",
+    );
+    expect(
+      screen.getByRole("heading", { name: "Sign in" }),
+    ).toBeInTheDocument();
   });
 });

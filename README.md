@@ -2,11 +2,11 @@
 
 An internal-LAN web application for tracking gate component quantities, stock movements, and administrative actions. The public React dashboard is read-only and available without login. The initial inventory will contain 10 components; their names, photos, starting quantities, and minimum stock levels are to be provided.
 
-Anyone on the authorised internal company LAN can view current component stock, component details, and stock statistics without logging in or starting a session. Login is required only for transaction history and protected actions. The backend enforces active-account and role checks; Engineers can view history, while Admins can manage components and users and view audit logs. Stock mutation endpoints are not implemented yet.
+Anyone on the authorised internal company LAN can view current component stock, component details, and stock statistics without logging in. The frontend restores an existing session without redirecting public visitors and asks users to sign in only when they choose Login or attempt a future protected action. There is no public registration. The backend enforces active-account and role checks; Engineers can view history, while Admins can manage components and users and view audit logs. Stock mutation endpoints and management screens are not implemented yet.
 
 ## Technology
 
-- React, TypeScript, and Vite public dashboard.
+- React, TypeScript, and Vite public dashboard and sign-in interface.
 - Node.js, Express.js, and TypeScript backend.
 - PostgreSQL 17 with TypeORM and explicit migrations.
 - Docker and Docker Compose.
@@ -91,7 +91,7 @@ npm run lint
 npm run build
 ```
 
-The frontend reads only public component and statistics GET endpoints. Copy `frontend/.env.example` to `frontend/.env` for host development; `VITE_API_BASE_URL` is a public URL path, while `API_PROXY_TARGET` is used only by the Vite server. Neither variable contains credentials.
+Public inventory requests use only the public component and statistics GET endpoints and omit credentials. Authentication uses the existing session and CSRF endpoints with cookies; passwords and CSRF tokens are not stored in browser persistence. Copy `frontend/.env.example` to `frontend/.env` for host development; `VITE_API_BASE_URL` is a public URL path, while `API_PROXY_TARGET` is used only by the Vite server. Neither variable contains credentials.
 
 ## Project documentation
 
