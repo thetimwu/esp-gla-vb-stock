@@ -2,7 +2,7 @@
 
 An internal-LAN web application for tracking gate component quantities, stock movements, and administrative actions. The public React dashboard is read-only and available without login. The initial inventory will contain 10 components; their names, photos, starting quantities, and minimum stock levels are to be provided.
 
-Anyone on the authorised internal company LAN can view current component stock, component details, and stock statistics without logging in. The frontend restores an existing session without redirecting public visitors and asks users to sign in only when they choose Login or attempt a future protected action. There is no public registration. The backend enforces active-account and role checks; Engineers can view history, while Admins can manage components and users and view audit logs. Stock mutation endpoints and management screens are not implemented yet.
+Anyone on the authorised internal company LAN can view current component stock, component details, and stock statistics without logging in. The frontend restores an existing session without redirecting public visitors and asks users to sign in only when they choose Login or attempt a protected action. There is no public registration. The backend enforces active-account and role checks; Engineers and Admins can perform stock operations and view history, while Admins can manage components and users and view audit logs. Stock-operation and administration screens are not implemented yet.
 
 ## Technology
 
@@ -12,7 +12,7 @@ Anyone on the authorised internal company LAN can view current component stock, 
 - Docker and Docker Compose.
 - Initial production host: Windows PC on the internal company LAN; future target: Ubuntu Server.
 
-The backend provides public health, component, and statistics endpoints; PostgreSQL-backed login sessions; CSRF and login rate limiting; protected transaction-history reads; and Admin-only component/user/audit APIs. Stock quantity updates remain unimplemented.
+The backend provides public health, component, and statistics endpoints; PostgreSQL-backed login sessions; CSRF and login rate limiting; protected stock operations and filtered transaction-history reads; and Admin-only component/user/audit APIs. Stock changes and history records are committed atomically in PostgreSQL.
 
 ## Run locally
 
@@ -79,7 +79,7 @@ From `backend/`, set `DB_NAME=gate_inventory_test` for the test command after ru
 - `npm run format:check` — Prettier validation.
 - `npm run build` — production TypeScript build.
 
-Public endpoints are `GET /api/health`, `/api/components`, `/api/components/:id`, and `/api/statistics`. Authentication uses `/api/auth/csrf-token`, `/api/auth/login`, `/api/auth/session`, and `/api/auth/logout`. Protected history and admin endpoints are documented in [architecture](./docs/architecture.md). Stock mutation endpoints are intentionally not implemented.
+Public endpoints are `GET /api/health`, `/api/components`, `/api/components/:id`, and `/api/statistics`. Authentication uses `/api/auth/csrf-token`, `/api/auth/login`, `/api/auth/session`, and `/api/auth/logout`. Authenticated active Engineers and Admins can use `POST /api/components/:componentId/stock-transactions` for stock-in, stock-out, and absolute-quantity adjustments; include the session cookie and CSRF header. `GET /api/transactions` supports pagination and optional component, operation-type, and date-range filters. Protected history and admin endpoints are documented in [architecture](./docs/architecture.md).
 
 Frontend checks from `frontend/`:
 

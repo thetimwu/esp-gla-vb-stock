@@ -52,7 +52,8 @@ Only prompt for login when an unauthenticated visitor attempts an operation requ
 - Save the resulting quantity change and its transaction record atomically in a PostgreSQL transaction.
 - Lock the component row or use a conditional update to reject stale concurrent writes; roll back the quantity and transaction together if either fails.
 - Prevent concurrent changes from silently overwriting one another. A conflicting/stale update must be rejected or safely retried; it must not be reported as successful unless both the quantity and transaction record are committed.
-- Use integer quantities initially. Reject invalid quantities and any stock-out or adjustment that would result in a quantity below zero at both application and database boundaries.
+- Use non-negative PostgreSQL integer quantities. Stock-in and stock-out accept positive whole-number deltas; adjustment accepts an absolute non-negative `newQuantity`. Reject decimals, zero/negative deltas, negative adjustment targets, and values beyond the PostgreSQL integer range.
+- Optional stock transaction comments are trimmed and limited to 500 characters.
 - Ordinary users must not be able to modify or delete existing transaction records.
 - Show low-stock status when current quantity is strictly less than the configured minimum stock level.
 - Component definitions may include flexible attributes, but validation and supported attribute types need to be agreed before implementation.
@@ -61,7 +62,7 @@ Only prompt for login when an unauthenticated visitor attempts an operation requ
 
 - **Stock-in:** add a positive amount.
 - **Stock-out:** remove a positive amount, provided sufficient stock remains.
-- **Adjustment:** reconcile the recorded quantity to an explicitly supplied value or record a signed difference. The user experience and audit representation must be settled before implementation; in either design the resulting quantity cannot be negative.
+- **Adjustment:** reconcile the recorded quantity to an explicitly supplied absolute `newQuantity`; record the signed difference as `quantity_change`.
 
 Every transaction must be attributable to the authenticated user and use a server-generated timestamp. Client-supplied identity or timestamps must not be trusted.
 
@@ -109,7 +110,6 @@ Add backend/API tests for each item below as its route/service is implemented; f
 
 - Names, photos, starting quantities, and minimum stock levels for the initial 10 components.
 - Units and rounding rules for integer quantities, and whether fractional precision may be needed in a future schema change.
-- The exact adjustment workflow and representation.
 - Supported flexible attribute types, validation rules, and whether attributes are searchable/filterable.
 - Account recovery/reset process.
 - TLS termination, reverse-proxy identity/trust configuration, and LAN certificate operations.

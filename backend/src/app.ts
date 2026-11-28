@@ -34,6 +34,10 @@ import {
   historyReader,
   type HistoryReader,
 } from "./services/historyService.js";
+import {
+  stockOperationService,
+  type StockOperationService,
+} from "./services/stockOperationService.js";
 
 export interface AppDependencies {
   checkDatabaseConnection(): Promise<void>;
@@ -44,6 +48,7 @@ export interface AppDependencies {
   userAdmin?: UserAdminService;
   sessionHandler?: RequestHandler;
   historyReader?: HistoryReader;
+  stockOperations?: StockOperationService;
 }
 
 export function createApp({
@@ -55,6 +60,7 @@ export function createApp({
   userAdmin = userAdminService,
   sessionHandler = sessionMiddleware,
   historyReader: providedHistoryReader = historyReader,
+  stockOperations = stockOperationService,
 }: AppDependencies): Express {
   const app = express();
   app.disable("x-powered-by");
@@ -75,6 +81,7 @@ export function createApp({
       auth,
       componentAdmin,
       sessionHandler,
+      stockOperations,
     ),
   );
   app.get(

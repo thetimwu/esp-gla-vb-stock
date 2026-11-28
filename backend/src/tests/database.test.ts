@@ -30,12 +30,14 @@ const transactionRepository = AppDataSource.getRepository(StockTransaction);
 const auditRepository = AppDataSource.getRepository(AuditLog);
 const fixtureComponentIds: string[] = [];
 const fixtureUserIds: string[] = [];
+let loginClientNumber = 0;
 
 const app = createApp({
   checkDatabaseConnection,
   logger,
   componentReader,
 });
+app.set("trust proxy", 1);
 
 beforeAll(async () => {
   const environment = parseEnvironment();
@@ -112,6 +114,7 @@ async function login(user: User, password = "integration-passphrase") {
   const csrfResponse = await agent.get("/api/auth/csrf-token");
   const response = await agent
     .post("/api/auth/login")
+    .set("x-forwarded-for", `10.0.0.${++loginClientNumber}`)
     .set("x-csrf-token", csrfResponse.body.csrfToken)
     .send({ username: user.username, password });
   expect(response.status).toBe(200);
@@ -212,6 +215,8 @@ describe("PostgreSQL-backed public API", () => {
     const invalidComponent = transactionRepository.create({
       componentId: randomUUID(),
       userId: user.id,
+      componentName: "Invalid component",
+      username: user.username,
       actionType: StockAction.STOCK_IN,
       previousQuantity: 0,
       newQuantity: 1,
@@ -228,6 +233,8 @@ describe("PostgreSQL-backed public API", () => {
     const invalidUser = transactionRepository.create({
       componentId,
       userId: randomUUID(),
+      componentName: "Database test component",
+      username: "missing-user",
       actionType: StockAction.STOCK_IN,
       previousQuantity: 0,
       newQuantity: 1,
@@ -239,6 +246,40 @@ describe("PostgreSQL-backed public API", () => {
         driverError: expect.objectContaining({ code: "23503" }),
       },
     );
+
+    const invalidDirection = transactionRepository.create({
+      componentId,
+      userId: user.id,
+      componentName: "Database test component",
+      username: user.username,
+      actionType: StockAction.STOCK_IN,
+      previousQuantity: 0,
+      newQuantity: 1,
+      quantityChange: -1,
+      comment: null,
+    });
+    await expect(
+      transactionRepository.save(invalidDirection),
+    ).rejects.toMatchObject({
+      driverError: expect.objectContaining({ code: "23514" }),
+    });
+
+    const excessiveComment = transactionRepository.create({
+      componentId,
+      userId: user.id,
+      componentName: "Database test component",
+      username: user.username,
+      actionType: StockAction.STOCK_IN,
+      previousQuantity: 0,
+      newQuantity: 1,
+      quantityChange: 1,
+      comment: "x".repeat(501),
+    });
+    await expect(
+      transactionRepository.save(excessiveComment),
+    ).rejects.toMatchObject({
+      driverError: expect.objectContaining({ code: "23514" }),
+    });
   });
 
   it("persists login sessions in PostgreSQL and invalidates them on logout", async () => {
@@ -268,6 +309,16 @@ describe("PostgreSQL-backed public API", () => {
     const { agent, csrfToken } = await login(engineer);
 
     expect((await agent.get("/api/transactions")).status).toBe(200);
+    expect(
+      (
+        await agent
+          .post(
+            `/api/components/${fixtureComponentIds.at(-1)}/stock-transactions`,
+          )
+          .set("x-csrf-token", csrfToken)
+          .send({ type: StockAction.STOCK_IN, quantity: 1 })
+      ).status,
+    ).toBe(201);
     expect((await agent.get("/api/admin/components")).status).toBe(403);
     expect((await agent.get("/api/admin/users")).status).toBe(403);
     expect(
@@ -281,6 +332,16 @@ describe("PostgreSQL-backed public API", () => {
 
     const admin = await createUser(UserRole.ADMIN);
     const adminSession = await login(admin);
+    expect(
+      (
+        await adminSession.agent
+          .post(
+            `/api/components/${fixtureComponentIds.at(-1)}/stock-transactions`,
+          )
+          .set("x-csrf-token", adminSession.csrfToken)
+          .send({ type: StockAction.STOCK_IN, quantity: 1 })
+      ).status,
+    ).toBe(201);
     expect((await adminSession.agent.get("/api/admin/components")).status).toBe(
       200,
     );
@@ -389,6 +450,24 @@ describe("PostgreSQL-backed public API", () => {
     expect(
       (await engineer.agent.get("/api/auth/session")).body.user,
     ).toBeNull();
+    const componentId = fixtureComponentIds.at(-1);
+    if (!componentId) {
+      throw new Error("Missing database test component fixture");
+    }
+    const quantityBeforeRejectedWrite = (
+      await repository.findOneByOrFail({ id: componentId })
+    ).currentQuantity;
+    expect(
+      (
+        await engineer.agent
+          .post(`/api/components/${componentId}/stock-transactions`)
+          .set("x-csrf-token", engineer.csrfToken)
+          .send({ type: StockAction.STOCK_IN, quantity: 1 })
+      ).status,
+    ).toBe(401);
+    expect(
+      (await repository.findOneByOrFail({ id: componentId })).currentQuantity,
+    ).toBe(quantityBeforeRejectedWrite);
 
     const reLogin = request.agent(app);
     const reLoginCsrf = (await reLogin.get("/api/auth/csrf-token")).body
@@ -401,5 +480,209 @@ describe("PostgreSQL-backed public API", () => {
         password,
       });
     expect(rejectedLogin.status).toBe(401);
+  });
+
+  it("records stock-in, stock-out, and absolute adjustments with filtered history", async () => {
+    const user = await createUser(UserRole.ENGINEER);
+    const { agent, csrfToken } = await login(user);
+    const componentId = fixtureComponentIds.at(-1);
+    if (!componentId) {
+      throw new Error("Missing database test component fixture");
+    }
+    const from = new Date(Date.now() - 1_000).toISOString();
+    const operations = [
+      { type: StockAction.STOCK_IN, quantity: 3 },
+      { type: StockAction.STOCK_OUT, quantity: 2 },
+      { type: StockAction.ADJUSTMENT, newQuantity: 8 },
+    ];
+
+    const results = [];
+    for (const operation of operations) {
+      const response = await agent
+        .post(`/api/components/${componentId}/stock-transactions`)
+        .set("x-csrf-token", csrfToken)
+        .send(operation);
+      expect(response.status).toBe(201);
+      results.push(response.body.transaction);
+    }
+
+    expect(results.map((transaction) => transaction.newQuantity)).toEqual([
+      7, 5, 8,
+    ]);
+    expect(results[0]).toMatchObject({
+      componentId,
+      componentName: expect.stringMatching(/^Database test component/),
+      userId: user.id,
+      username: user.username,
+      actionType: StockAction.STOCK_IN,
+      previousQuantity: 4,
+      quantityChange: 3,
+    });
+
+    const to = new Date(Date.now() + 1_000).toISOString();
+    const history = await agent.get(
+      `/api/transactions?componentId=${componentId}&actionType=${StockAction.STOCK_OUT}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+    );
+    expect(history.status).toBe(200);
+    expect(history.body.total).toBe(1);
+    expect(history.body.transactions[0]).toMatchObject({
+      componentName: results[0].componentName,
+      username: user.username,
+      actionType: StockAction.STOCK_OUT,
+      previousQuantity: 7,
+      newQuantity: 5,
+      quantityChange: -2,
+    });
+
+    const component = await repository.findOneByOrFail({ id: componentId });
+    expect(component.currentQuantity).toBe(8);
+    expect(
+      (await request(app).get("/api/statistics")).body.statistics,
+    ).toMatchObject({
+      totalStockQuantity: 8,
+    });
+  });
+
+  it("rejects invalid quantities, excessive comments, and insufficient stock", async () => {
+    const user = await createUser(UserRole.ENGINEER);
+    const { agent, csrfToken } = await login(user);
+    const componentId = fixtureComponentIds.at(-1);
+    if (!componentId) {
+      throw new Error("Missing database test component fixture");
+    }
+    const invalidOperations = [
+      { type: StockAction.STOCK_IN, quantity: 0 },
+      { type: StockAction.STOCK_IN, quantity: -1 },
+      { type: StockAction.STOCK_IN, quantity: 1.5 },
+      { type: StockAction.STOCK_IN, quantity: 2_147_483_647 },
+      { type: StockAction.STOCK_OUT, quantity: 0 },
+      { type: StockAction.STOCK_OUT, quantity: -1 },
+      { type: StockAction.STOCK_OUT, quantity: 1.25 },
+      { type: StockAction.ADJUSTMENT, newQuantity: -1 },
+      { type: StockAction.ADJUSTMENT, newQuantity: 1.5 },
+      { type: StockAction.STOCK_IN, quantity: 1, comment: "x".repeat(501) },
+      { type: "UNKNOWN", quantity: 1 },
+    ];
+
+    for (const operation of invalidOperations) {
+      const response = await agent
+        .post(`/api/components/${componentId}/stock-transactions`)
+        .set("x-csrf-token", csrfToken)
+        .send(operation);
+      expect(response.status).toBe(400);
+    }
+
+    const insufficient = await agent
+      .post(`/api/components/${componentId}/stock-transactions`)
+      .set("x-csrf-token", csrfToken)
+      .send({ type: StockAction.STOCK_OUT, quantity: 5 });
+    expect(insufficient.status).toBe(409);
+    expect(insufficient.body.error.code).toBe("INSUFFICIENT_STOCK");
+    expect(await transactionRepository.countBy({ componentId })).toBe(0);
+    expect(
+      (await repository.findOneByOrFail({ id: componentId })).currentQuantity,
+    ).toBe(4);
+  });
+
+  it("rejects public and archived-component writes", async () => {
+    const componentId = fixtureComponentIds.at(-1);
+    if (!componentId) {
+      throw new Error("Missing database test component fixture");
+    }
+    const anonymous = await request(app)
+      .post(`/api/components/${componentId}/stock-transactions`)
+      .send({ type: StockAction.STOCK_IN, quantity: 1 });
+    expect(anonymous.status).toBe(401);
+
+    const user = await createUser(UserRole.ENGINEER);
+    const { agent, csrfToken } = await login(user);
+    const missing = await agent
+      .post(`/api/components/${randomUUID()}/stock-transactions`)
+      .set("x-csrf-token", csrfToken)
+      .send({ type: StockAction.STOCK_IN, quantity: 1 });
+    expect(missing.status).toBe(404);
+    expect(missing.body.error.code).toBe("COMPONENT_NOT_FOUND");
+
+    const component = await repository.findOneByOrFail({ id: componentId });
+    component.isActive = false;
+    await repository.save(component);
+    const archived = await agent
+      .post(`/api/components/${componentId}/stock-transactions`)
+      .set("x-csrf-token", csrfToken)
+      .send({ type: StockAction.STOCK_IN, quantity: 1 });
+    expect(archived.status).toBe(409);
+    expect(archived.body.error.code).toBe("COMPONENT_ARCHIVED");
+    expect(await transactionRepository.countBy({ componentId })).toBe(0);
+  });
+
+  it("rolls back the quantity update if transaction insertion fails", async () => {
+    const user = await createUser(UserRole.ENGINEER);
+    const { agent, csrfToken } = await login(user);
+    const componentId = fixtureComponentIds.at(-1);
+    if (!componentId) {
+      throw new Error("Missing database test component fixture");
+    }
+    try {
+      await AppDataSource.query(`
+        CREATE OR REPLACE FUNCTION fail_stock_transaction_insert() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION 'injected transaction history failure';
+        END;
+        $$
+      `);
+      await AppDataSource.query(`
+        DROP TRIGGER IF EXISTS fail_stock_transaction_insert ON stock_transactions
+      `);
+      await AppDataSource.query(`
+        CREATE TRIGGER fail_stock_transaction_insert
+        BEFORE INSERT ON stock_transactions
+        FOR EACH ROW EXECUTE FUNCTION fail_stock_transaction_insert()
+      `);
+      const response = await agent
+        .post(`/api/components/${componentId}/stock-transactions`)
+        .set("x-csrf-token", csrfToken)
+        .send({ type: StockAction.STOCK_IN, quantity: 2 });
+      expect(response.status).toBe(500);
+      expect(
+        (await repository.findOneByOrFail({ id: componentId })).currentQuantity,
+      ).toBe(4);
+      expect(await transactionRepository.countBy({ componentId })).toBe(0);
+    } finally {
+      await AppDataSource.query(
+        `DROP TRIGGER IF EXISTS fail_stock_transaction_insert ON stock_transactions`,
+      );
+      await AppDataSource.query(
+        `DROP FUNCTION IF EXISTS fail_stock_transaction_insert()`,
+      );
+    }
+  });
+
+  it("serializes concurrent stock-outs without allowing negative stock", async () => {
+    const user = await createUser(UserRole.ENGINEER);
+    const { agent, csrfToken } = await login(user);
+    const componentId = fixtureComponentIds.at(-1);
+    if (!componentId) {
+      throw new Error("Missing database test component fixture");
+    }
+
+    const responses = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        agent
+          .post(`/api/components/${componentId}/stock-transactions`)
+          .set("x-csrf-token", csrfToken)
+          .send({ type: StockAction.STOCK_OUT, quantity: 1 }),
+      ),
+    );
+    expect(
+      responses.filter((response) => response.status === 201),
+    ).toHaveLength(4);
+    expect(
+      responses.filter((response) => response.status === 409),
+    ).toHaveLength(4);
+    expect(
+      (await repository.findOneByOrFail({ id: componentId })).currentQuantity,
+    ).toBe(0);
+    expect(await transactionRepository.countBy({ componentId })).toBe(4);
   });
 });

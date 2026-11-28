@@ -20,6 +20,8 @@ export enum StockAction {
 @Entity({ name: "stock_transactions" })
 @Index("IDX_stock_transactions_component_created", ["componentId", "createdAt"])
 @Index("IDX_stock_transactions_user_created", ["userId", "createdAt"])
+@Index("IDX_stock_transactions_action_created", ["actionType", "createdAt"])
+@Index("IDX_stock_transactions_created", ["createdAt"])
 @Check(
   "CHK_stock_transactions_previous_nonnegative",
   `"previous_quantity" >= 0`,
@@ -28,6 +30,22 @@ export enum StockAction {
 @Check(
   "CHK_stock_transactions_change_matches",
   `"quantity_change" = "new_quantity" - "previous_quantity"`,
+)
+@Check(
+  "CHK_stock_transactions_action_direction",
+  `("action_type" = 'STOCK_IN' AND "quantity_change" > 0) OR ("action_type" = 'STOCK_OUT' AND "quantity_change" < 0) OR "action_type" = 'ADJUSTMENT'`,
+)
+@Check(
+  "CHK_stock_transactions_component_name_nonempty",
+  `length(trim("component_name")) > 0`,
+)
+@Check(
+  "CHK_stock_transactions_username_nonempty",
+  `length(trim("username")) > 0`,
+)
+@Check(
+  "CHK_stock_transactions_comment_length",
+  `"comment" IS NULL OR length("comment") <= 500`,
 )
 export class StockTransaction {
   @PrimaryGeneratedColumn("uuid")
@@ -42,6 +60,12 @@ export class StockTransaction {
 
   @Column({ name: "user_id", type: "uuid" })
   userId!: string;
+
+  @Column({ name: "component_name", type: "varchar", length: 200 })
+  componentName!: string;
+
+  @Column({ type: "varchar", length: 100 })
+  username!: string;
 
   @ManyToOne(() => User, { nullable: false, onDelete: "RESTRICT" })
   @JoinColumn({ name: "user_id" })

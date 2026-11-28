@@ -5,6 +5,7 @@ import session from "express-session";
 import { createApp } from "../app.js";
 import { createLogger } from "../config/logger.js";
 import { UserRole } from "../entities/User.js";
+import { StockAction, StockTransaction } from "../entities/StockTransaction.js";
 import type { AuthService } from "../services/authService.js";
 import type { ComponentAdminService } from "../services/componentAdminService.js";
 import type {
@@ -16,6 +17,7 @@ import type {
   UserAdminService,
 } from "../services/userAdminService.js";
 import type { HistoryReader } from "../services/historyService.js";
+import type { StockOperationService } from "../services/stockOperationService.js";
 
 const logger: Logger = createLogger("silent");
 const engineer = {
@@ -48,6 +50,7 @@ function createTestApp(
     componentAdmin?: ComponentAdminService;
     userAdmin?: UserAdminService;
     historyReader?: HistoryReader;
+    stockOperations?: StockOperationService;
   } = {},
 ) {
   const components = overrides.components ?? [];
@@ -132,6 +135,33 @@ function createTestApp(
     listTransactions: vi.fn(async () => ({ records: [], total: 0 })),
     listAuditLogs: vi.fn(async () => ({ records: [], total: 0 })),
   };
+  const stockOperations: StockOperationService = overrides.stockOperations ?? {
+    record: vi.fn(async (componentId, operation, userId) =>
+      Object.assign(new StockTransaction(), {
+        id: "transaction-created",
+        componentId,
+        componentName: "Example component",
+        userId,
+        username: "engineer",
+        actionType: operation.type,
+        previousQuantity: 4,
+        newQuantity:
+          operation.type === StockAction.ADJUSTMENT
+            ? operation.newQuantity
+            : operation.type === StockAction.STOCK_IN
+              ? 4 + operation.quantity
+              : 4 - operation.quantity,
+        quantityChange:
+          operation.type === StockAction.ADJUSTMENT
+            ? operation.newQuantity - 4
+            : operation.type === StockAction.STOCK_IN
+              ? operation.quantity
+              : -operation.quantity,
+        comment: operation.comment ?? null,
+        createdAt: new Date(),
+      }),
+    ),
+  };
   const app = createApp({
     checkDatabaseConnection: async () => {
       if (overrides.connected === false) {
@@ -144,6 +174,7 @@ function createTestApp(
     componentAdmin,
     userAdmin,
     historyReader,
+    stockOperations,
     sessionHandler: session({
       secret: "unit-test-session-secret-with-more-than-32-characters",
       resave: false,
@@ -151,7 +182,7 @@ function createTestApp(
       cookie: { sameSite: "strict" },
     }),
   });
-  return { app, reader, auth, componentAdmin, userAdmin };
+  return { app, reader, auth, componentAdmin, userAdmin, stockOperations };
 }
 
 async function login(
@@ -280,14 +311,65 @@ describe("public component endpoints", () => {
       expect(auditLogs.status).toBe(401);
     });
 
-    it("does not expose a stock-mutation endpoint in this milestone", async () => {
-      const { app } = createTestApp();
+    it("requires authentication and CSRF for stock operations", async () => {
+      const { app, stockOperations } = createTestApp();
 
-      const response = await request(app)
-        .post(`/api/components/${component.id}/stock-in`)
-        .send({ quantity: 1 });
+      const anonymous = await request(app)
+        .post(`/api/components/${component.id}/stock-transactions`)
+        .send({ type: StockAction.STOCK_IN, quantity: 1 });
+      expect(anonymous.status).toBe(401);
+      expect(stockOperations.record).not.toHaveBeenCalled();
 
-      expect(response.status).toBe(404);
+      const { agent, response: loginResponse } = await login(app, "engineer");
+      const invalidCsrf = await agent
+        .post(`/api/components/${component.id}/stock-transactions`)
+        .send({ type: StockAction.STOCK_IN, quantity: 1 });
+      expect(invalidCsrf.status).toBe(403);
+
+      const csrfToken = loginResponse.body.csrfToken as string;
+      const created = await agent
+        .post(`/api/components/${component.id}/stock-transactions`)
+        .set("x-csrf-token", csrfToken)
+        .send({
+          type: StockAction.STOCK_IN,
+          quantity: 1,
+          comment: "Received parts",
+        });
+      expect(created.status).toBe(201);
+      expect(created.body.transaction).toMatchObject({
+        componentId: component.id,
+        actionType: StockAction.STOCK_IN,
+        previousQuantity: 4,
+        newQuantity: 5,
+        quantityChange: 1,
+        comment: "Received parts",
+      });
+      expect(stockOperations.record).toHaveBeenCalledOnce();
+    });
+
+    it("validates stock operation quantities and request fields", async () => {
+      const { app, stockOperations } = createTestApp();
+      const { agent, response: loginResponse } = await login(app, "engineer");
+      const csrfToken = loginResponse.body.csrfToken as string;
+
+      const invalid = await Promise.all(
+        [
+          { type: StockAction.STOCK_IN, quantity: 0 },
+          { type: StockAction.STOCK_OUT, quantity: 1.5 },
+          { type: StockAction.ADJUSTMENT, newQuantity: -1 },
+          { type: StockAction.STOCK_IN, quantity: 1, unexpected: true },
+        ].map((body) =>
+          agent
+            .post(`/api/components/${component.id}/stock-transactions`)
+            .set("x-csrf-token", csrfToken)
+            .send(body),
+        ),
+      );
+
+      expect(invalid.map((response) => response.status)).toEqual([
+        400, 400, 400, 400,
+      ]);
+      expect(stockOperations.record).not.toHaveBeenCalled();
     });
 
     it("denies Engineers component and user administration", async () => {

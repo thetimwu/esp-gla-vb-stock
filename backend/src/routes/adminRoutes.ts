@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { ApiError } from "../errors/ApiError.js";
 import { UserRole } from "../entities/User.js";
+import { StockAction } from "../entities/StockTransaction.js";
 import {
   requireActiveUser,
   requireAdmin,
@@ -57,6 +58,17 @@ const paginationSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).max(100_000).default(0),
 });
+
+const transactionQuerySchema = paginationSchema
+  .extend({
+    componentId: z.uuid().optional(),
+    actionType: z.enum(StockAction).optional(),
+    from: z.iso.datetime({ offset: true }).optional(),
+    to: z.iso.datetime({ offset: true }).optional(),
+  })
+  .refine(({ from, to }) => !from || !to || new Date(from) <= new Date(to), {
+    message: "The from date must not be later than the to date",
+  });
 
 export function createAdminRouter(
   auth: AuthService,
@@ -144,10 +156,16 @@ export function createTransactionHistoryRouter(
   const router = Router();
   router.use(sessionHandler, requireActiveUser(auth));
   router.get("/", async (request, response) => {
-    const pagination = paginationSchema.safeParse(request.query);
+    const pagination = transactionQuerySchema.safeParse(request.query);
     if (!pagination.success) throw pagination.error;
-    const { limit, offset } = pagination.data;
-    const page = await history.listTransactions(limit, offset);
+    const { limit, offset, componentId, actionType, from, to } =
+      pagination.data;
+    const page = await history.listTransactions(limit, offset, {
+      ...(componentId ? { componentId } : {}),
+      ...(actionType ? { actionType } : {}),
+      ...(from ? { from: new Date(from) } : {}),
+      ...(to ? { to: new Date(to) } : {}),
+    });
     response.status(200).json({
       transactions: page.records,
       total: page.total,
