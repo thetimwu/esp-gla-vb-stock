@@ -1,9 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import type { AuthUser } from "./api/authApi";
 import type { PublicComponent, PublicStatistics } from "./api/inventoryApi";
+import type { StockTransaction } from "./api/transactionApi";
 
 const components: PublicComponent[] = [
   {
@@ -55,6 +56,48 @@ const adminUser: AuthUser = {
   role: "ADMIN",
 };
 
+const transactionRecords: StockTransaction[] = [
+  {
+    id: "transaction-1",
+    componentId: "hinge-1",
+    componentName: "Hinge clamp",
+    userId: engineerUser.id,
+    username: engineerUser.username,
+    actionType: "STOCK_IN",
+    previousQuantity: 4,
+    newQuantity: 7,
+    quantityChange: 3,
+    comment: "Replenishment",
+    createdAt: "2026-03-20T12:00:00.000Z",
+  },
+  {
+    id: "transaction-2",
+    componentId: "latch-2",
+    componentName: "Latch bolt",
+    userId: adminUser.id,
+    username: adminUser.username,
+    actionType: "STOCK_OUT",
+    previousQuantity: 8,
+    newQuantity: 6,
+    quantityChange: -2,
+    comment: null,
+    createdAt: "2026-03-19T12:00:00.000Z",
+  },
+  {
+    id: "transaction-3",
+    componentId: "hinge-1",
+    componentName: "Hinge clamp",
+    userId: adminUser.id,
+    username: adminUser.username,
+    actionType: "ADJUSTMENT",
+    previousQuantity: 7,
+    newQuantity: 5,
+    quantityChange: -2,
+    comment: "Physical count",
+    createdAt: "2026-03-18T12:00:00.000Z",
+  },
+];
+
 interface AuthMockOptions {
   initialUser?: AuthUser | null;
   loginUser?: AuthUser;
@@ -63,11 +106,16 @@ interface AuthMockOptions {
   stockStatus?: number | null;
   stockMessage?: string;
   stockDelayMs?: number;
+  historyStatus?: number | null;
+  historyMessage?: string;
+  historyDelayMs?: number;
+  historyRecords?: StockTransaction[];
 }
 
 interface AuthMockState {
   sessionUser: AuthUser | null;
   stockStatus: number | null;
+  historyStatus: number | null;
   csrfToken: string;
 }
 
@@ -95,10 +143,14 @@ function respondWithDashboard(
   const authState: AuthMockState = {
     sessionUser: authOptions.initialUser ?? null,
     stockStatus: authOptions.stockStatus ?? null,
+    historyStatus: authOptions.historyStatus ?? null,
     csrfToken: "csrf-token-before-login",
   };
   let inventoryState = inventory.map((component) => ({ ...component }));
   let statisticsState = { ...totals };
+  const historyState = (authOptions.historyRecords ?? transactionRecords).map(
+    (transaction) => ({ ...transaction }),
+  );
   const loginUser = authOptions.loginUser ?? engineerUser;
   const loginStatus = authOptions.loginStatus ?? 200;
   const loginMessage =
@@ -154,6 +206,67 @@ function respondWithDashboard(
       }
       authState.sessionUser = null;
       return emptyResponse();
+    }
+    if (url.includes("/transactions?")) {
+      if (authOptions.historyDelayMs) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, authOptions.historyDelayMs),
+        );
+      }
+      if (authState.historyStatus !== null) {
+        if (authState.historyStatus === 401) {
+          authState.sessionUser = null;
+        }
+        return jsonResponse(
+          {
+            error: {
+              code:
+                authState.historyStatus === 401
+                  ? "AUTHENTICATION_REQUIRED"
+                  : "HISTORY_UNAVAILABLE",
+              message:
+                authOptions.historyMessage ??
+                "Transaction history could not be loaded.",
+            },
+          },
+          authState.historyStatus,
+        );
+      }
+      if (!authState.sessionUser) {
+        return jsonResponse(
+          {
+            error: {
+              code: "AUTHENTICATION_REQUIRED",
+              message: "Login required",
+            },
+          },
+          401,
+        );
+      }
+
+      const requestUrl = new URL(url, "http://localhost");
+      const params = requestUrl.searchParams;
+      const componentId = params.get("componentId");
+      const actionType = params.get("actionType");
+      const from = params.get("from");
+      const to = params.get("to");
+      const filtered = historyState.filter((transaction) => {
+        const timestamp = Date.parse(transaction.createdAt);
+        return (
+          (!componentId || transaction.componentId === componentId) &&
+          (!actionType || transaction.actionType === actionType) &&
+          (!from || timestamp >= Date.parse(from)) &&
+          (!to || timestamp <= Date.parse(to))
+        );
+      });
+      const limit = Number(params.get("limit") ?? 50);
+      const offset = Number(params.get("offset") ?? 0);
+      return jsonResponse({
+        transactions: filtered.slice(offset, offset + limit),
+        total: filtered.length,
+        limit,
+        offset,
+      });
     }
     if (url.endsWith("/stock-transactions")) {
       if (authOptions.stockDelayMs) {
@@ -1102,5 +1215,289 @@ describe("public stock dashboard", () => {
     expect(
       screen.getByRole("heading", { name: "Sign in" }),
     ).toBeInTheDocument();
+  });
+
+  describe("transaction history interface", () => {
+    it("does not show history navigation to a public visitor", async () => {
+      respondWithDashboard();
+      render(<App />);
+
+      expect(await screen.findByText("Hinge clamp")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("link", { name: "Transaction history" }),
+      ).toBeNull();
+    });
+
+    it("prompts public visitors to sign in and returns them to requested history", async () => {
+      respondWithDashboard();
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}#transactions`,
+      );
+      render(<App />);
+
+      expect(
+        await screen.findByRole("heading", { name: "Sign in" }),
+      ).toBeInTheDocument();
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).includes("/transactions?"),
+        ),
+      ).toBe(false);
+
+      await submitLogin(engineerUser.username);
+      expect(
+        await screen.findByRole("heading", {
+          name: "Stock transaction history",
+        }),
+      ).toBeInTheDocument();
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).includes("/transactions?"),
+        ),
+      ).toBe(true);
+    });
+
+    it.each([
+      ["Engineer", engineerUser],
+      ["Admin", adminUser],
+    ] as const)(
+      "allows an authenticated %s to view history",
+      async (_role, account) => {
+        respondWithDashboard(components, statistics, { initialUser: account });
+        render(<App />);
+        const user = userEvent.setup();
+
+        await user.click(
+          await screen.findByRole("link", { name: "Transaction history" }),
+        );
+
+        expect(
+          await screen.findByRole("heading", {
+            name: "Stock transaction history",
+          }),
+        ).toBeInTheDocument();
+        const historyTable = screen.getByRole("table");
+        expect(
+          await within(historyTable).findAllByText("Hinge clamp"),
+        ).toHaveLength(2);
+        expect(within(historyTable).getByText("Stock In")).toBeInTheDocument();
+        expect(within(historyTable).getByText("+3")).toBeInTheDocument();
+        expect(
+          within(historyTable).getByText("test-engineer"),
+        ).toBeInTheDocument();
+        expect(
+          within(historyTable).getByText("Replenishment"),
+        ).toBeInTheDocument();
+        expect(
+          within(historyTable).getByText("Physical count"),
+        ).toBeInTheDocument();
+
+        const historyCall = fetchMock.mock.calls.find(([url]) =>
+          String(url).includes("/transactions?"),
+        );
+        expect(historyCall?.[1]?.credentials).toBe("include");
+        const historyUrl = new URL(
+          String(historyCall?.[0]),
+          "http://localhost",
+        );
+        expect(historyUrl.pathname).toBe("/api/transactions");
+        expect(historyUrl.searchParams.get("limit")).toBe("20");
+        expect(historyUrl.searchParams.get("offset")).toBe("0");
+      },
+    );
+
+    it("applies component, type, and inclusive date filters through the API", async () => {
+      respondWithDashboard(components, statistics, {
+        initialUser: engineerUser,
+      });
+      render(<App />);
+      const user = userEvent.setup();
+
+      await user.click(
+        await screen.findByRole("link", { name: "Transaction history" }),
+      );
+      const historyTable = await screen.findByRole("table");
+      await within(historyTable).findAllByText("Hinge clamp");
+
+      await user.selectOptions(screen.getByLabelText("Component"), "latch-2");
+      await user.selectOptions(
+        screen.getByLabelText("Transaction type"),
+        "STOCK_OUT",
+      );
+      await user.type(screen.getByLabelText("Start date"), "2026-03-19");
+      await user.type(screen.getByLabelText("End date"), "2026-03-19");
+      await user.click(screen.getByRole("button", { name: "Apply filters" }));
+
+      const filteredTable = await screen.findByRole("table");
+      expect(
+        await within(filteredTable).findByText("Latch bolt"),
+      ).toBeInTheDocument();
+      expect(within(filteredTable).queryByText("Hinge clamp")).toBeNull();
+
+      const historyCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes("/transactions?"),
+      );
+      const historyUrl = new URL(
+        String(historyCalls.at(-1)?.[0]),
+        "http://localhost",
+      );
+      expect(historyUrl.searchParams.get("componentId")).toBe("latch-2");
+      expect(historyUrl.searchParams.get("actionType")).toBe("STOCK_OUT");
+      expect(historyUrl.searchParams.get("from")).toBe(
+        new Date("2026-03-19T00:00:00").toISOString(),
+      );
+      const expectedEnd = new Date("2026-03-19T00:00:00");
+      expectedEnd.setHours(23, 59, 59, 999);
+      expect(historyUrl.searchParams.get("to")).toBe(expectedEnd.toISOString());
+    });
+
+    it("uses server-side pagination and displays page totals", async () => {
+      const baseTransaction = transactionRecords[0];
+      if (!baseTransaction) {
+        throw new Error("Missing transaction fixture");
+      }
+      const records = Array.from({ length: 27 }, (_, index) => ({
+        ...baseTransaction,
+        id: `page-transaction-${index + 1}`,
+        createdAt: new Date(
+          Date.parse(baseTransaction.createdAt) - index * 1_000,
+        ).toISOString(),
+      }));
+      respondWithDashboard(components, statistics, {
+        initialUser: engineerUser,
+        historyRecords: records,
+      });
+      render(<App />);
+      const user = userEvent.setup();
+
+      await user.click(
+        await screen.findByRole("link", { name: "Transaction history" }),
+      );
+      const historyNavigation = await screen.findByRole("navigation", {
+        name: "History pages",
+      });
+      expect(
+        await within(historyNavigation).findByText(/Page 1 of 2/),
+      ).toBeInTheDocument();
+      expect(screen.getAllByRole("row").slice(1)).toHaveLength(20);
+      await user.click(
+        within(historyNavigation).getByRole("button", { name: "Next" }),
+      );
+      const secondPageNavigation = await screen.findByRole("navigation", {
+        name: "History pages",
+      });
+      expect(
+        await within(secondPageNavigation).findByText(/Page 2 of 2/),
+      ).toBeInTheDocument();
+      expect(screen.getAllByRole("row").slice(1)).toHaveLength(7);
+
+      let historyCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes("/transactions?"),
+      );
+      expect(
+        new URL(
+          String(historyCalls.at(-1)?.[0]),
+          "http://localhost",
+        ).searchParams.get("offset"),
+      ).toBe("20");
+
+      await user.click(
+        within(secondPageNavigation).getByRole("button", {
+          name: "Previous",
+        }),
+      );
+      const firstPageNavigation = await screen.findByRole("navigation", {
+        name: "History pages",
+      });
+      expect(
+        await within(firstPageNavigation).findByText(/Page 1 of 2/),
+      ).toBeInTheDocument();
+      expect(screen.getAllByRole("row").slice(1)).toHaveLength(20);
+      historyCalls = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes("/transactions?"),
+      );
+      expect(
+        new URL(
+          String(historyCalls.at(-1)?.[0]),
+          "http://localhost",
+        ).searchParams.get("offset"),
+      ).toBe("0");
+    });
+
+    it("shows loading and error states and retries a failed request", async () => {
+      const authState = respondWithDashboard(components, statistics, {
+        initialUser: engineerUser,
+        historyStatus: 503,
+        historyMessage: "Transaction service temporarily unavailable.",
+        historyDelayMs: 30,
+      });
+      render(<App />);
+      const user = userEvent.setup();
+
+      await user.click(
+        await screen.findByRole("link", { name: "Transaction history" }),
+      );
+      expect(
+        await screen.findByText("Loading transaction history…"),
+      ).toBeInTheDocument();
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Transaction service temporarily unavailable.",
+      );
+
+      authState.historyStatus = null;
+      await user.click(screen.getByRole("button", { name: "Try again" }));
+      const historyTable = await screen.findByRole("table");
+      expect(
+        await within(historyTable).findAllByText("Hinge clamp"),
+      ).toHaveLength(2);
+    });
+
+    it("returns an authenticated user to sign-in when the history session expires", async () => {
+      const authState = respondWithDashboard(components, statistics, {
+        initialUser: engineerUser,
+        historyStatus: 401,
+      });
+      render(<App />);
+      const user = userEvent.setup();
+
+      await user.click(
+        await screen.findByRole("link", { name: "Transaction history" }),
+      );
+      expect(
+        await screen.findByRole("heading", { name: "Sign in" }),
+      ).toBeInTheDocument();
+      expect(authState.sessionUser).toBeNull();
+      expect(screen.queryByRole("table")).toBeNull();
+    });
+
+    it("validates the date range before requesting filtered records", async () => {
+      respondWithDashboard(components, statistics, {
+        initialUser: engineerUser,
+      });
+      render(<App />);
+      const user = userEvent.setup();
+
+      await user.click(
+        await screen.findByRole("link", { name: "Transaction history" }),
+      );
+      await screen.findByRole("table");
+      const requestCount = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes("/transactions?"),
+      ).length;
+      await user.type(screen.getByLabelText("Start date"), "2026-03-20");
+      await user.type(screen.getByLabelText("End date"), "2026-03-19");
+      await user.click(screen.getByRole("button", { name: "Apply filters" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "The start date must not be later than the end date.",
+      );
+      expect(
+        fetchMock.mock.calls.filter(([url]) =>
+          String(url).includes("/transactions?"),
+        ),
+      ).toHaveLength(requestCount);
+    });
   });
 });

@@ -14,6 +14,7 @@ import {
 } from "./api/authApi";
 import LoginPage from "./auth/LoginPage";
 import StockOperationPanel from "./stock/StockOperationPanel";
+import TransactionHistoryPage from "./history/TransactionHistoryPage";
 import "./App.css";
 
 type DashboardState =
@@ -387,11 +388,15 @@ function App() {
   const [isLoginRoute, setIsLoginRoute] = useState(
     () => window.location.hash === "#login",
   );
+  const [isHistoryRoute, setIsHistoryRoute] = useState(
+    () => window.location.hash === "#transactions",
+  );
   const [authenticationNotice, setAuthenticationNotice] = useState<
     string | null
   >(null);
   const [loggingOut, setLoggingOut] = useState(false);
   const hasAuthenticatedInThisMount = useRef(false);
+  const returnToHistoryAfterLogin = useRef(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -433,7 +438,9 @@ function App() {
 
   useEffect(() => {
     function updateRouteFromHash() {
-      setIsLoginRoute(window.location.hash === "#login");
+      const currentHash = window.location.hash;
+      setIsLoginRoute(currentHash === "#login");
+      setIsHistoryRoute(currentHash === "#transactions");
     }
 
     window.addEventListener("hashchange", updateRouteFromHash);
@@ -449,6 +456,16 @@ function App() {
       );
     }
   }, [authentication, isLoginRoute]);
+
+  useEffect(() => {
+    if (
+      isHistoryRoute &&
+      (authentication.status === "anonymous" ||
+        authentication.status === "error")
+    ) {
+      requestHistorySignIn();
+    }
+  }, [authentication.status, isHistoryRoute]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -475,8 +492,32 @@ function App() {
     hasAuthenticatedInThisMount.current = true;
     setAuthentication({ status: "authenticated", user, csrfToken });
     setAuthenticationNotice(null);
-    window.location.hash = "#top";
+    const returnToHistory = returnToHistoryAfterLogin.current;
+    returnToHistoryAfterLogin.current = false;
+    window.location.hash = returnToHistory ? "#transactions" : "#top";
+    setIsHistoryRoute(returnToHistory);
     setIsLoginRoute(false);
+  }
+
+  function requestHistorySignIn() {
+    returnToHistoryAfterLogin.current = true;
+    setAuthenticationNotice(
+      "Sign in to view transaction history. You will return here after login.",
+    );
+    window.location.hash = "#login";
+    setIsLoginRoute(true);
+    setIsHistoryRoute(false);
+  }
+
+  function handleHistorySessionExpired() {
+    returnToHistoryAfterLogin.current = true;
+    setAuthentication({ status: "anonymous" });
+    setAuthenticationNotice(
+      "Your session expired. Sign in again to view transaction history.",
+    );
+    window.location.hash = "#login";
+    setIsLoginRoute(true);
+    setIsHistoryRoute(false);
   }
 
   function requestStockSignIn() {
@@ -559,6 +600,7 @@ function App() {
       setAuthenticationNotice("You have been signed out.");
       window.location.hash = "#top";
       setIsLoginRoute(false);
+      setIsHistoryRoute(false);
     } catch (error) {
       if (
         error instanceof AuthenticationApiError &&
@@ -573,6 +615,7 @@ function App() {
             );
             window.location.hash = "#top";
             setIsLoginRoute(false);
+            setIsHistoryRoute(false);
             return;
           }
 
@@ -638,6 +681,8 @@ function App() {
     (component) => component.currentQuantity === 0,
   ).length;
   const loginView = isLoginRoute && authentication.status !== "authenticated";
+  const historyView =
+    isHistoryRoute && authentication.status === "authenticated";
 
   return (
     <div className="app-shell">
@@ -658,13 +703,27 @@ function App() {
           </span>
         </a>
         <nav className="site-nav" aria-label="Main navigation">
-          <a className="site-nav__link site-nav__link--active" href="#top">
+          <a
+            className={`site-nav__link${isHistoryRoute ? "" : " site-nav__link--active"}`}
+            href="#top"
+          >
             Dashboard
           </a>
-          <span className="read-only-label">
-            <span className="read-only-label__dot" aria-hidden="true" />
-            Read-only dashboard
-          </span>
+          {authentication.status === "authenticated" && (
+            <a
+              className={`site-nav__link${isHistoryRoute ? " site-nav__link--active" : ""}`}
+              href="#transactions"
+              aria-current={isHistoryRoute ? "page" : undefined}
+            >
+              Transaction history
+            </a>
+          )}
+          {!isHistoryRoute && (
+            <span className="read-only-label">
+              <span className="read-only-label__dot" aria-hidden="true" />
+              Read-only dashboard
+            </span>
+          )}
           {authentication.status === "checking" ? (
             <span className="auth-checking" role="status">
               Checking sign-in…
@@ -729,7 +788,11 @@ function App() {
       )}
 
       {loginView && <LoginPage onAuthenticated={handleAuthenticated} />}
-      <main id="top" className="dashboard-main" hidden={loginView}>
+      <main
+        id="top"
+        className="dashboard-main"
+        hidden={loginView || historyView}
+      >
         <section className="welcome-panel" aria-labelledby="page-title">
           <div className="welcome-panel__copy">
             <p className="eyebrow">Company inventory</p>
@@ -952,6 +1015,12 @@ function App() {
           )}
         </section>
       </main>
+      {historyView && (
+        <TransactionHistoryPage
+          components={components}
+          onSessionExpired={handleHistorySessionExpired}
+        />
+      )}
 
       <footer className="site-footer">
         <span>Gate Components Inventory</span>

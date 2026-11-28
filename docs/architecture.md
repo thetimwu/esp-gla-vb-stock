@@ -2,14 +2,14 @@
 
 ## Agreed technology
 
-- **Frontend:** React, TypeScript, and Vite. The public read-only dashboard is implemented in Milestone 3A; login and session navigation are implemented in Milestone 3B.
+- **Frontend:** React, TypeScript, and Vite. The public read-only dashboard, login/session navigation, stock operations, and protected transaction history are implemented in Milestones 3A–3E.
 - **Backend:** Node.js, Express.js, and TypeScript.
 - **Database:** PostgreSQL 17 with TypeORM and explicit migrations.
 - **Deployment:** Docker and Docker Compose.
 - **Initial host:** Windows PC on the internal company LAN, using Docker Desktop.
 - **Future target:** Ubuntu Server.
 
-The backend includes public inventory reads, session-based authentication, access control, component/user administration, protected history reads, and atomic stock operations. The React frontend provides the public read-only dashboard and sign-in/session navigation; stock-operation and administration screens remain unimplemented.
+The backend includes public inventory reads, session-based authentication, access control, component/user administration, protected history reads, and atomic stock operations. The React frontend provides the public read-only dashboard, sign-in/session navigation, stock operations, and a protected paginated transaction-history page; administration screens remain unimplemented.
 
 ## System boundaries
 
@@ -42,11 +42,11 @@ The dashboard is available to every visitor on the authorised company LAN withou
 | Create/edit/deactivate/reactivate users and assign roles             |                   Deny |     Deny | Allow |
 | Audit logs and application inventory settings                        |                   Deny |     Deny | Allow |
 
-Every protected request checks authentication and active-account state on the backend. ADMIN-only endpoints additionally check the role in backend middleware/service authorization. The current frontend opens login only when a visitor chooses Login; stock-operation and administration controls are not implemented in React yet. When a protected frontend action is added, its intended destination should be preserved through sign-in where still valid. No dashboard route or public GET redirects to login.
+Every protected request checks authentication and active-account state on the backend. ADMIN-only endpoints additionally check the role in backend middleware/service authorization. The frontend opens login when a visitor chooses Login or attempts a protected stock operation or transaction-history view. It preserves the intended protected destination through sign-in where still valid. No dashboard route or public GET redirects to login.
 
 The public component response is an explicit allowlist: component ID, display name, description, part number, current quantity, minimum stock level, and photo URL/reference. It excludes flexible/private attributes, user data, transaction and audit records, sessions, credentials, and security configuration. `/api/statistics` returns public aggregate counts from active components only. A component is low-stock when current quantity is strictly less than its minimum.
 
-The frontend uses `VITE_API_BASE_URL` (default `/api`) and the Vite server proxies that path to `API_PROXY_TARGET`. The proxy target is server-side configuration and is not exposed to browser code. Public inventory requests use `credentials: omit`; authentication endpoints use `credentials: include`. On startup, the frontend checks `GET /api/auth/session` to restore a signed-in account; the backend's `saveUninitialized: false` session configuration avoids creating an anonymous session. A CSRF token is requested when the visitor opens the login page, and after session restoration for an authenticated account. The frontend keeps the CSRF token and account state in memory only; it does not persist passwords, session IDs, or tokens in browser storage. The role-aware header shows an Administration item to ADMIN users only, but administration screens and controls are not implemented. Stock-update, transaction, and user-management screens remain out of scope.
+The frontend uses `VITE_API_BASE_URL` (default `/api`) and the Vite server proxies that path to `API_PROXY_TARGET`. The proxy target is server-side configuration and is not exposed to browser code. Public inventory requests use `credentials: omit`; authentication and transaction-history requests use `credentials: include`. On startup, the frontend checks `GET /api/auth/session` to restore a signed-in account; the backend's `saveUninitialized: false` session configuration avoids creating an anonymous session. A CSRF token is requested when the visitor opens the login page, and after session restoration for an authenticated account. The frontend keeps the CSRF token and account state in memory only; it does not persist passwords, session IDs, or tokens in browser storage. The role-aware header shows an Administration item to ADMIN users only, but administration screens and controls are not implemented. User-management screens remain out of scope.
 
 Authentication uses an HttpOnly, SameSite=Strict session cookie backed by the PostgreSQL `sessions` table. Session IDs rotate on login; each protected request reloads the account and checks that it remains active and has the required role. Login and authenticated state-changing requests require a synchronizer CSRF token. Login attempts are rate-limited per client IP. No session middleware is applied to public dashboard endpoints.
 
@@ -177,6 +177,18 @@ This design prevents concurrent requests from silently overwriting one another a
 - Extend protected transaction history with component, action, and inclusive date-range filters.
 - Keep component-management writes independent of stock quantity.
 - Verify validation, permissions, insufficient stock, concurrent updates, transaction atomicity, and anonymous history/write denial using PostgreSQL integration tests.
+
+### Milestone 3D: React stock operations interface
+
+- Allow authenticated ENGINEER and ADMIN users to submit stock-in, stock-out, and adjustment operations through the existing protected endpoint.
+- Preserve public read-only access and prompt anonymous visitors to sign in only when they request a protected stock action.
+- Refresh public component and statistics data after a successful operation; keep the server authoritative for stock quantities.
+
+### Milestone 3E: stock transaction history interface
+
+- Provide a protected history view to authenticated ENGINEER and ADMIN users; anonymous attempts return to sign-in and return to history after successful authentication.
+- Use `GET /api/transactions` with server-side component, action, inclusive date-range, and pagination parameters; display historical component/user snapshots and quantity changes.
+- Keep transaction records out of public dashboard responses and handle loading, empty, retry, and expired-session states.
 
 Authentication/API contracts, account recovery, photo storage, audit coverage, and other unresolved product/security decisions remain governed by [requirements.md](./requirements.md). Do not implement behavior depending on an unresolved decision until it is agreed.
 
