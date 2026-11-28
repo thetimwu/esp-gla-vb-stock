@@ -15,10 +15,10 @@ No account or session is required to open the website or browse the dashboard. U
 - View all active components, photos, names, descriptions, current quantities, and other non-sensitive component details.
 - View total stock statistics and counts of low-stock components.
 - Identify components below their minimum stock levels.
-- Search and filter the inventory.
+- Search by component name or part number and filter the inventory by stock status.
 - View non-sensitive component details.
 
-Public reads must not expose user information, passwords or password hashes, session data, internal security settings, private audit logs, transaction history, or sensitive administrative information. Low stock means current quantity is strictly below the configured minimum.
+Part numbers are non-sensitive component details and may be included in the public component response when present. Public reads must not expose user information, passwords or password hashes, session data, internal security settings, private audit logs, transaction history, or sensitive administrative information. Low stock means current quantity is strictly below the configured minimum.
 
 ### Engineer
 

@@ -2,24 +2,25 @@
 
 ## Agreed technology
 
-- **Frontend:** React, TypeScript, and Vite (planned).
+- **Frontend:** React, TypeScript, and Vite. The public read-only dashboard is implemented in Milestone 3A.
 - **Backend:** Node.js, Express.js, and TypeScript.
 - **Database:** PostgreSQL 17 with TypeORM and explicit migrations.
 - **Deployment:** Docker and Docker Compose.
 - **Initial host:** Windows PC on the internal company LAN, using Docker Desktop.
 - **Future target:** Ubuntu Server.
 
-The backend includes public inventory reads, session-based authentication, access control, component/user administration, and protected history reads. The React frontend and stock mutation workflows remain unimplemented.
+The backend includes public inventory reads, session-based authentication, access control, component/user administration, and protected history reads. The React frontend provides the public read-only dashboard; stock mutation workflows remain unimplemented.
 
 ## System boundaries
 
 ```text
 Browser on authorised company LAN
         |
-        | public read-only dashboard; login only for protected actions
+        | public read-only dashboard; no login/session
         v
-React + TypeScript frontend (planned)
+React + TypeScript + Vite frontend
         |
+        | public GETs via same-origin /api proxy
         v
 Express + TypeScript backend
         |
@@ -43,7 +44,9 @@ The dashboard is available to every visitor on the authorised company LAN withou
 
 Every protected request checks authentication and active-account state on the backend. ADMIN-only endpoints additionally check the role in backend middleware/service authorization. A frontend login redirect preserves the intended protected URL/action, then resumes it after successful login if still valid. No dashboard route or public GET redirects to login.
 
-The public component response is an explicit allowlist: component ID, display name, description, current quantity, minimum stock level, and photo URL/reference. It excludes flexible/private attributes, user data, transaction and audit records, sessions, credentials, and security configuration. `/api/statistics` returns public aggregate counts from active components only. A component is low-stock when current quantity is strictly less than its minimum.
+The public component response is an explicit allowlist: component ID, display name, description, part number, current quantity, minimum stock level, and photo URL/reference. It excludes flexible/private attributes, user data, transaction and audit records, sessions, credentials, and security configuration. `/api/statistics` returns public aggregate counts from active components only. A component is low-stock when current quantity is strictly less than its minimum.
+
+The frontend uses `VITE_API_BASE_URL` for public browser requests (default `/api`) and the Vite server proxies that path to `API_PROXY_TARGET`. The proxy target is server-side configuration and is not exposed to browser code. Public requests omit credentials; no dashboard read initializes or sends an authenticated session. The frontend does not contain stock-update, transaction, user-management, or administration controls.
 
 Authentication uses an HttpOnly, SameSite=Strict session cookie backed by the PostgreSQL `sessions` table. Session IDs rotate on login; each protected request reloads the account and checks that it remains active and has the required role. Login and authenticated state-changing requests require a synchronizer CSRF token. Login attempts are rate-limited per client IP. No session middleware is applied to public dashboard endpoints.
 
@@ -52,7 +55,7 @@ Authentication uses an HttpOnly, SameSite=Strict session cookie backed by the Po
 Keep HTTP routing, request validation, business rules, authorization, persistence, and response/error mapping distinct. Routes/controllers must not bypass business rules by writing directly to repositories.
 
 - Keep `GET /api/health`, `GET /api/components`, `GET /api/components/:id`, and `GET /api/statistics` public and read-only.
-- Public component responses include only component UUID, name as `displayName`, description, current quantity, minimum stock level, and photo reference. They do not expose JSONB attributes, credentials, sessions, users, transactions, or audit data.
+- Public component responses include only component UUID, name as `displayName`, description, part number, current quantity, minimum stock level, and photo reference. They do not expose JSONB attributes, credentials, sessions, users, transactions, or audit data.
 - Validate UUID route parameters before querying PostgreSQL and return safe errors without exposing database internals.
 - Require authentication and an active account for transaction-history reads. Require ADMIN for user administration, component administration, archiving, and audit-log access. No stock write or settings endpoints are implemented in this milestone.
 - Keep stock changes as domain operations: validate input, verify authorization, lock or conditionally update the component, and append its transaction atomically in one PostgreSQL transaction.
@@ -136,6 +139,14 @@ This design prevents concurrent requests from silently overwriting one another a
 - All state-changing routes require a valid CSRF token. Role and active-account checks are backend middleware; deactivation takes effect on the next protected request.
 - `POST /api/auth/login` is limited to 10 attempts per IP per 15-minute window.
 - Do not add a React frontend or stock mutation endpoints as part of this milestone.
+
+### Milestone 3A: public stock dashboard
+
+- Implement the public React/TypeScript/Vite dashboard as the default frontend page; dashboard loading never requires login or redirects visitors.
+- Load `GET /api/components` and `GET /api/statistics` in parallel and fetch `GET /api/components/:id` when opening a component detail view. Use the existing response envelopes and public fields, including optional part number; do not request protected endpoints.
+- Provide summary cards, public component cards/details, name/part-number search, stock-status filtering, quantity/name sorting, loading/error/retry, and empty-inventory states.
+- Keep API URL configuration in frontend environment variables. Use a same-origin `/api` Vite proxy for development; do not put credentials in frontend configuration.
+- Do not add login, stock mutation, transaction, user-management, or administration functionality in this milestone.
 
 ### Milestone 3: stock operations
 

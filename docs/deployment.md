@@ -54,9 +54,26 @@ From the project root:
    curl --fail http://localhost:3000/api/statistics
    ```
 
-The backend waits for PostgreSQL readiness, but migrations are intentionally not run automatically during startup. The health endpoint performs a database query and returns 503 when PostgreSQL is unavailable. The API is bound to localhost by default; change `API_HOST_BIND` only to an approved LAN host address for an authorised deployment. PostgreSQL remains localhost-only even in that configuration and is not exposed to the LAN.
+The backend waits for PostgreSQL readiness, but migrations are intentionally not run automatically during startup. The health endpoint performs a database query and returns 503 when PostgreSQL is unavailable. Keep the backend API and PostgreSQL loopback-only for dashboard access; the Vite proxy reaches the backend over the Compose application network. Change `FRONTEND_HOST_BIND` to an approved LAN host address only for authorised LAN dashboard testing, with the company firewall configured accordingly.
 
 Use `docker compose down` for a normal stop; it preserves `postgres_data`. Do not use volume-removal commands as part of routine shutdown. The official image's administrator configuration and application-role initialization apply only when initializing an empty volume. Editing `.env` does not rotate existing PostgreSQL credentials; use an approved database credential-rotation procedure.
+
+## Public dashboard development
+
+The frontend is a React/TypeScript/Vite development application. It calls only public `GET /api/components`, `GET /api/components/:componentId`, and `GET /api/statistics`; Vite proxies `/api` to the backend, so browser requests are same-origin and do not require CORS configuration or session credentials.
+
+For host-based development, start the backend as above, then:
+
+```sh
+cd frontend
+cp .env.example .env
+npm ci
+npm run dev
+```
+
+Open `http://localhost:5173`. The frontend `.env.example` sets `VITE_API_BASE_URL=/api` and a server-only `API_PROXY_TARGET=http://127.0.0.1:3000`. To use the optional Compose frontend development profile, start the integrated services with `docker compose --profile frontend up -d --build`; the profile's default frontend host binding is loopback-only. Set only `FRONTEND_HOST_BIND` to an approved LAN host address and configure the host firewall before testing from authorised LAN clients; keep the API and PostgreSQL host bindings private.
+
+The Compose profile runs Vite's development server, not a production static web server. Do not use it as the production deployment. Production static hosting, TLS termination, and the approved frontend serving/reverse-proxy arrangement remain deployment decisions.
 
 ## Run the backend directly on the host
 

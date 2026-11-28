@@ -5,6 +5,7 @@ export interface PublicComponent {
   id: string;
   displayName: string;
   description: string;
+  partNumber: string | null;
   currentQuantity: number;
   minimumStockLevel: number;
   photoUrl: string | null;
@@ -27,6 +28,7 @@ type PublicComponentRecord = Pick<
   | "id"
   | "name"
   | "description"
+  | "partNumber"
   | "currentQuantity"
   | "minimumStockLevel"
   | "photoPath"
@@ -37,6 +39,7 @@ function toPublicComponent(component: PublicComponentRecord): PublicComponent {
     id: component.id,
     displayName: component.name,
     description: component.description,
+    partNumber: component.partNumber,
     currentQuantity: component.currentQuantity,
     minimumStockLevel: component.minimumStockLevel,
     photoUrl: component.photoPath,
@@ -50,6 +53,7 @@ export const componentReader: ComponentReader = {
         id: true,
         name: true,
         description: true,
+        partNumber: true,
         currentQuantity: true,
         minimumStockLevel: true,
         photoPath: true,
@@ -66,6 +70,7 @@ export const componentReader: ComponentReader = {
         id: true,
         name: true,
         description: true,
+        partNumber: true,
         currentQuantity: true,
         minimumStockLevel: true,
         photoPath: true,

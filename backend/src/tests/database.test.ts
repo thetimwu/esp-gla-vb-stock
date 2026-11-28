@@ -59,7 +59,7 @@ beforeEach(async () => {
     repository.create({
       name: `Database test component ${randomUUID()}`,
       description: "Test fixture",
-      partNumber: null,
+      partNumber: "TEST-PART-0001",
       currentQuantity: 4,
       minimumStockLevel: 2,
       photoPath: null,
@@ -164,6 +164,7 @@ describe("PostgreSQL-backed public API", () => {
         id: fixtureComponentIds[fixtureComponentIds.length - 1],
         displayName: expect.stringMatching(/^Database test component/),
         description: "Test fixture",
+        partNumber: "TEST-PART-0001",
         currentQuantity: 4,
         minimumStockLevel: 2,
         photoUrl: null,
@@ -180,6 +181,7 @@ describe("PostgreSQL-backed public API", () => {
 
     expect(found.status).toBe(200);
     expect(found.body.component.id).toBe(id);
+    expect(found.body.component.partNumber).toBe("TEST-PART-0001");
     expect(missing.status).toBe(404);
     expect(missing.body.error.code).toBe("COMPONENT_NOT_FOUND");
   });

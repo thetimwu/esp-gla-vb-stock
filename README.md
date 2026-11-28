@@ -1,18 +1,18 @@
 # Gate Components Inventory Management
 
-A planned internal-LAN web application for tracking gate component quantities, stock movements, and administrative actions. The initial dashboard will contain 10 components; their names, photos, starting quantities, and minimum stock levels are to be provided.
+An internal-LAN web application for tracking gate component quantities, stock movements, and administrative actions. The public React dashboard is read-only and available without login. The initial inventory will contain 10 components; their names, photos, starting quantities, and minimum stock levels are to be provided.
 
 Anyone on the authorised internal company LAN can view current component stock, component details, and stock statistics without logging in or starting a session. Login is required only for transaction history and protected actions. The backend enforces active-account and role checks; Engineers can view history, while Admins can manage components and users and view audit logs. Stock mutation endpoints are not implemented yet.
 
 ## Technology
 
-- React, TypeScript, and Vite frontend (planned).
+- React, TypeScript, and Vite public dashboard.
 - Node.js, Express.js, and TypeScript backend.
 - PostgreSQL 17 with TypeORM and explicit migrations.
 - Docker and Docker Compose.
 - Initial production host: Windows PC on the internal company LAN; future target: Ubuntu Server.
 
-The backend provides public health, component, and statistics endpoints; PostgreSQL-backed login sessions; CSRF and login rate limiting; protected transaction-history reads; and Admin-only component/user/audit APIs. Stock quantity updates and the React frontend are not implemented in this milestone.
+The backend provides public health, component, and statistics endpoints; PostgreSQL-backed login sessions; CSRF and login rate limiting; protected transaction-history reads; and Admin-only component/user/audit APIs. Stock quantity updates remain unimplemented.
 
 ## Run locally
 
@@ -31,7 +31,18 @@ Requirements: Node.js 22 or 24, npm, and Docker Compose.
 5. Start the backend: `docker compose up -d backend`.
 6. Check `http://localhost:3000/api/health`, `http://localhost:3000/api/components`, and `http://localhost:3000/api/statistics`.
 
-PostgreSQL 17 uses the persistent named volume `postgres_data`. An initialization script creates a separate application role with schema permissions; the backend does not connect as the database administrator. Initialization runs only when the data volume is empty. Its port is published on `127.0.0.1:5432` for local host-based development only; it is not exposed to the company LAN. The backend waits for PostgreSQL readiness. The public API is published on localhost by default; change `API_HOST_BIND` to the approved LAN host address only for an authorised deployment. `docker compose down` stops containers but preserves the database volume.
+7. Start the frontend development server on the host:
+
+   ```sh
+   cd frontend
+   cp .env.example .env
+   npm ci
+   npm run dev
+   ```
+
+   Open `http://localhost:5173`. Alternatively, from the project root, start the optional Compose frontend with `docker compose --profile frontend up -d --build frontend`; it proxies `/api` to the backend without exposing database credentials to the browser.
+
+PostgreSQL 17 uses the persistent named volume `postgres_data`. An initialization script creates a separate application role with schema permissions; the backend does not connect as the database administrator. Initialization runs only when the data volume is empty. Its port is published on `127.0.0.1:5432` for local host-based development only; it is not exposed to the company LAN. The backend waits for PostgreSQL readiness. The backend API and frontend are published on localhost by default; for authorised LAN dashboard testing, change only `FRONTEND_HOST_BIND` to an approved LAN host address and configure the company firewall. Keep `API_HOST_BIND` and PostgreSQL loopback-only unless a separately approved architecture requires direct access. `docker compose down` stops containers but preserves the database volume. The frontend Compose profile runs Vite's development server and is not a production static-serving configuration.
 
 Migrations are never run automatically on application startup. For later schema updates, rebuild the backend image, run `docker compose run --rm backend npm run migration:run`, then recreate the backend with `docker compose up -d --build backend`. To run migrations from a host development environment, use `npm run migration:run:dev` in `backend/` with the database environment variables configured.
 
@@ -69,6 +80,18 @@ From `backend/`, set `DB_NAME=gate_inventory_test` for the test command after ru
 - `npm run build` — production TypeScript build.
 
 Public endpoints are `GET /api/health`, `/api/components`, `/api/components/:id`, and `/api/statistics`. Authentication uses `/api/auth/csrf-token`, `/api/auth/login`, `/api/auth/session`, and `/api/auth/logout`. Protected history and admin endpoints are documented in [architecture](./docs/architecture.md). Stock mutation endpoints are intentionally not implemented.
+
+Frontend checks from `frontend/`:
+
+```sh
+npm ci
+npm test
+npm run typecheck
+npm run lint
+npm run build
+```
+
+The frontend reads only public component and statistics GET endpoints. Copy `frontend/.env.example` to `frontend/.env` for host development; `VITE_API_BASE_URL` is a public URL path, while `API_PROXY_TARGET` is used only by the Vite server. Neither variable contains credentials.
 
 ## Project documentation
 
